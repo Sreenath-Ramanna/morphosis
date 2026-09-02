@@ -288,7 +288,8 @@ differ only in the toe.
 ### Colour temperature
 
 `ria_raw_color_data` — added to the library for this app — returns the raw
-materials and stops there, which is the position PLAN.md §1 argues for: LibRaw
+materials and stops there, which is the position [raw_images_api's
+PLAN.md](https://github.com/Sreenath-Ramanna/raw_images_api/blob/master/PLAN.md) §1 argues for: LibRaw
 gives the inputs, never the answer. Two routes, and the panel says which one
 produced the number:
 
@@ -379,7 +380,7 @@ are the four inputs a colour temperature is derived from and the only ones
 LibRaw does not surface through the existing API. The derivation stays in
 Dart, in `colour_temp.dart`, because it is a matter of judgement — which
 locus, which method, and whether the answer is meaningful at all — and
-PLAN.md §5 leaves that judgement open.
+[raw_images_api's PLAN.md](https://github.com/Sreenath-Ramanna/raw_images_api/blob/master/PLAN.md) §5 leaves that judgement open.
 
 ## Licence
 
