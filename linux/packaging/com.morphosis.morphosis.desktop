@@ -1,0 +1,26 @@
+[Desktop Entry]
+Type=Application
+Name=Morphosis
+GenericName=Camera RAW Editor
+Comment=Adjust colour, exposure and crop on camera RAW files, without altering them
+# @EXEC@ is replaced with the absolute path to the bundle executable by
+# scripts/install.sh — a .desktop Exec must be an absolute path or a name that
+# is on PATH, and the bundle is neither until it is installed.
+Exec=@EXEC@ %f
+# Both of these must match APPLICATION_ID in linux/CMakeLists.txt, and so must
+# this file's own basename. The runner calls g_set_prgname(APPLICATION_ID), so
+# that string is the window's Wayland app id and the instance half of its X11
+# WM_CLASS — measured, not assumed: xprop reports
+#   WM_CLASS = "com.morphosis.morphosis", "Com.morphosis.morphosis"
+# A Wayland compositor ignores the icon the process sets on its own window and
+# instead matches that app id against a .desktop file, taking the icon from
+# here. Rename any one of the three without the others and the icon silently
+# becomes a generic placeholder, with nothing logged.
+Icon=com.morphosis.morphosis
+StartupWMClass=com.morphosis.morphosis
+Terminal=false
+Categories=Graphics;2DGraphics;RasterGraphics;Photography;
+# Passing a RAW file opens the folder that holds it with that frame selected;
+# passing a folder opens it at the first frame.
+MimeType=inode/directory;image/x-canon-cr2;image/x-canon-cr3;image/x-nikon-nef;image/x-sony-arw;image/x-fuji-raf;image/x-adobe-dng;image/x-olympus-orf;image/x-pentax-pef;image/x-panasonic-rw2;
+Keywords=RAW;photo;camera;develop;NEF;CR3;crop;exposure;

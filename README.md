@@ -106,6 +106,38 @@ A folder can be passed on the command line, which skips the browse step:
 ./build/linux/x64/release/bundle/morphosis ~/photos/2026-09-02
 ```
 
+## Install
+
+```bash
+scripts/install.sh              # build the release bundle, then install
+scripts/install.sh --no-build   # install what is already built
+scripts/install.sh --uninstall
+```
+
+Everything lands under `~/.local/share`; no root. The bundle is **copied** to
+`~/.local/share/com.morphosis.morphosis/` rather than linked, because a
+`.desktop` Exec records an absolute path and pointing it into `build/` means a
+`flutter clean` silently breaks the menu entry. A `morphosis` symlink goes in
+`~/.local/bin`.
+
+Installing is what makes the icon appear under Wayland at all. A compositor
+ignores the icon a process sets on its own window and instead matches the
+window's **app id** against a `.desktop` file, taking the icon from there. So
+three strings have to agree, and a mismatch fails silently with nothing
+logged:
+
+| | |
+|---|---|
+| `APPLICATION_ID` in `linux/CMakeLists.txt` | `com.morphosis.morphosis` |
+| `linux/packaging/…desktop` basename, `Icon=`, `StartupWMClass=` | `com.morphosis.morphosis` |
+| installed icons, `hicolor/*/apps/….png` | `com.morphosis.morphosis` |
+
+That the window really reports it is measured rather than assumed — `xprop`
+gives `WM_CLASS = "com.morphosis.morphosis", "Com.morphosis.morphosis"`.
+
+The entry declares RAW MIME types and `inode/directory`, so opening a RAW file
+from a file manager opens the folder that holds it with that frame selected.
+
 ## Checks
 
 ```bash

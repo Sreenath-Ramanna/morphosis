@@ -28,8 +28,13 @@ import 'right_panel.dart';
 
 class EditorScreen extends StatefulWidget {
   final String? initialFolder;
+  final String? initialSelection;
 
-  const EditorScreen({super.key, this.initialFolder});
+  const EditorScreen({
+    super.key,
+    this.initialFolder,
+    this.initialSelection,
+  });
 
   @override
   State<EditorScreen> createState() => _EditorScreenState();
@@ -100,7 +105,7 @@ class _EditorScreenState extends State<EditorScreen> {
 
       final start = widget.initialFolder;
       if (start != null && Directory(start).existsSync()) {
-        await _loadFolder(start);
+        await _loadFolder(start, select: widget.initialSelection);
       }
     } catch (e) {
       if (mounted) setState(() => _startupError = '$e');
@@ -118,7 +123,7 @@ class _EditorScreenState extends State<EditorScreen> {
     await _loadFolder(dir);
   }
 
-  Future<void> _loadFolder(String dir) async {
+  Future<void> _loadFolder(String dir, {String? select}) async {
     final entries = <PhotoEntry>[];
     try {
       final listing = await Directory(dir)
@@ -146,7 +151,14 @@ class _EditorScreenState extends State<EditorScreen> {
     });
 
     unawaited(_loadThumbnails(entries));
-    if (entries.isNotEmpty) await _select(0);
+    if (entries.isEmpty) return;
+
+    // A file handed over by the file manager: open its folder, but land on
+    // the frame that was actually double-clicked.
+    final wanted = select == null
+        ? -1
+        : entries.indexWhere((e) => p.equals(e.path, select));
+    await _select(wanted >= 0 ? wanted : 0);
   }
 
   /// Fills the strip in the background, one file at a time so that opening
