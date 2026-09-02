@@ -271,3 +271,30 @@ LibRaw does not surface through the existing API. The derivation stays in
 Dart, in `colour_temp.dart`, because it is a matter of judgement — which
 locus, which method, and whether the answer is meaningful at all — and
 PLAN.md §5 leaves that judgement open.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).
+
+### Third-party
+
+The MIT licence covers this repository's own source. A built application also
+contains, and is governed by the terms of:
+
+| component | licence |
+|---|---|
+| [LibRaw](https://www.libraw.org/) | LGPL-2.1-only **or** CDDL-1.0, with parts BSD-3-Clause |
+| [raw_images_api](https://github.com/Sreenath-Ramanna/raw_images_api) | MIT |
+| Flutter, `package:ffi`, `package:path` | BSD-3-Clause |
+| `package:image`, `package:file_picker` | MIT |
+
+LibRaw is the one with conditions attached. It is **dynamically linked** — the
+bundle loads `lib/libraw_images_api.so`, which in turn resolves `libraw_r.so`
+from the system — so a recipient can replace it, which is what LGPL-2.1 §6
+asks of anyone distributing binaries. Distribute a build and that obligation
+is yours to honour; publishing source carries none of it.
+
+The RAW processing algorithms here are reimplemented from published
+descriptions — the Planckian locus, Robertson's method, Bradford adaptation,
+extended Reinhard. No code is taken from darktable or RawTherapee, which are
+GPL applications.
