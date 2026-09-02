@@ -1,0 +1,269 @@
+// test/layout_golden_test.dart
+//
+// Renders the editor's real arrangement against synthetic state, at window
+// size, and checks it against a committed image.
+//
+// It catches the two things a widget test otherwise misses on a desktop
+// layout: a panel that overflows at its fixed width — every control in the
+// right column is text plus a slider inside 320 px — and a change that
+// silently moves something. Regenerate deliberately with
+//
+//     flutter test --update-goldens test/layout_golden_test.dart
+//
+// and look at the result before committing it.
+
+import 'dart:async';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:morphosis/src/model/edit.dart';
+import 'package:morphosis/src/pipeline/colour_temp.dart';
+import 'package:morphosis/src/pipeline/processor.dart';
+import 'package:morphosis/src/ria/ria.dart';
+import 'package:morphosis/src/ui/editor_layout.dart';
+import 'package:morphosis/src/ui/photo_list.dart';
+import 'package:morphosis/src/ui/theme.dart';
+
+const _size = Size(1440, 900);
+
+/// Stands in for a decoded frame: a synthetic photograph, so the canvas has
+/// something with real tonal range in it rather than a flat rectangle.
+///
+/// Must be awaited inside `tester.runAsync`: `decodeImageFromPixels` completes
+/// on the engine's thread, and the fake clock a widget test installs never
+/// lets that callback run.
+Future<ui.Image> syntheticFrame(int w, int h) {
+  final pixels = Uint8List(w * h * 4);
+  for (var y = 0; y < h; y++) {
+    for (var x = 0; x < w; x++) {
+      final i = (y * w + x) * 4;
+      final sky = y / h;
+      final band = ((x / w) * 6).floor().isEven ? 8 : 0;
+      pixels[i] = (150 - 90 * sky).round().clamp(0, 255) + band;
+      pixels[i + 1] = (170 - 100 * sky).round().clamp(0, 255) + band;
+      pixels[i + 2] = (200 - 70 * sky).round().clamp(0, 255) + band;
+      pixels[i + 3] = 255;
+    }
+  }
+  final done = Completer<ui.Image>();
+  ui.decodeImageFromPixels(pixels, w, h, ui.PixelFormat.rgba8888,
+      done.complete);
+  return done.future;
+}
+
+Histogram syntheticHistogram() {
+  final r = Uint32List(256), g = Uint32List(256), b = Uint32List(256);
+  final luma = Uint32List(256);
+  for (var i = 0; i < 256; i++) {
+    double bump(double centre, double width, double height) {
+      final d = (i - centre) / width;
+      return height * (1 / (1 + d * d * d * d));
+    }
+
+    r[i] = (bump(150, 40, 9000) + bump(60, 25, 2500)).round();
+    g[i] = (bump(140, 45, 9500) + bump(70, 30, 2200)).round();
+    b[i] = (bump(120, 55, 8000) + bump(90, 35, 3000)).round();
+    luma[i] = ((r[i] + g[i] + b[i]) / 3).round();
+  }
+  return Histogram(
+    red: r,
+    green: g,
+    blue: b,
+    luma: luma,
+    pixels: 1707008,
+    clippedBlack: 0.0004,
+    clippedWhite: 0.0021,
+  );
+}
+
+FrameInfo syntheticFrameInfo() => FrameInfo(
+      path: '/home/photos/2026-09-02/20250803_A0A8111.CR3',
+      metadata: const RawMetadata(
+        make: 'Canon',
+        model: 'EOS R7',
+        lens: 'RF100-500mm F4.5-7.1 L IS USM',
+        isoSpeed: 1000,
+        shutter: 1 / 1600,
+        aperture: 6.3,
+        focalLen: 500,
+        width: 6984,
+        height: 4660,
+      ),
+      asShot: const ColourTemperature(
+        kelvin: 5787,
+        duv: 0.0090,
+        fromCameraTable: true,
+        reliable: true,
+      ),
+      minKelvin: 2400,
+      maxKelvin: 12000,
+      autoGreyPoint: 0.0721,
+      medianEv: -3.09,
+      fullWidth: 6984,
+      fullHeight: 4660,
+      previewWidth: 1600,
+      previewHeight: 1068,
+    );
+
+List<PhotoEntry> syntheticPhotos() => const [
+      PhotoEntry('/p/20250803_A0A8111.CR3', '20250803_A0A8111.CR3'),
+      PhotoEntry('/p/20250803_A0A8123.CR3', '20250803_A0A8123.CR3'),
+      PhotoEntry('/p/20250803_A0A8129.CR3', '20250803_A0A8129.CR3'),
+      PhotoEntry('/p/20250803_A0A8132.CR3', '20250803_A0A8132.CR3'),
+      PhotoEntry('/p/20250803_A0A8138.CR3', '20250803_A0A8138.CR3'),
+      PhotoEntry('/p/20250803_A0A8152.CR3', '20250803_A0A8152.CR3'),
+      PhotoEntry('/p/DSC_1436.NEF', 'DSC_1436.NEF'),
+      PhotoEntry('/p/DSC_1437.NEF', 'DSC_1437.NEF'),
+      PhotoEntry('/p/DSC_1438.NEF', 'DSC_1438.NEF'),
+      PhotoEntry('/p/DSC_1439.NEF', 'DSC_1439.NEF'),
+    ];
+
+Widget harness(EditorViewState state) => MediaQuery(
+      data: const MediaQueryData(size: _size),
+      child: MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: buildTheme(),
+        home: EditorLayout(
+          state: state,
+          onBrowse: () {},
+          onExport: () {},
+          onSelect: (_) {},
+          onEditChanged: (_) {},
+        ),
+      ),
+    );
+
+void main() {
+  testWidgets('the editor lays out at window size', (tester) async {
+    tester.view.physicalSize = _size;
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final image = (await tester.runAsync(() => syntheticFrame(1600, 1068)))!;
+    addTearDown(image.dispose);
+
+    final state = EditorViewState(
+      folder: '/home/photos/2026-09-02',
+      photos: syntheticPhotos(),
+      thumbnails: {for (final p in syntheticPhotos()) p.path: null},
+      selected: 0,
+      frame: syntheticFrameInfo(),
+      image: image,
+      histogram: syntheticHistogram(),
+      edit: const Edit(
+        temperatureK: 6400,
+        blackEv: -0.6,
+        shadowEv: 1.4,
+        highlightEv: -0.9,
+        whiteEv: 0.4,
+        brightnessEv: 0.3,
+        contrastEv: 0.7,
+        sharpness: 0.6,
+        highlightRolloff: true,
+      ),
+      status: '10 RAW files',
+      renderMillis: 64,
+    );
+
+    await tester.pumpWidget(harness(state));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    await expectLater(find.byType(EditorLayout),
+        matchesGoldenFile('goldens/editor.png'));
+  });
+
+  testWidgets('the empty state lays out, and every control is reachable',
+      (tester) async {
+    tester.view.physicalSize = _size;
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(harness(const EditorViewState()));
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('Browse folder'), findsOneWidget);
+    expect(find.text('Export'), findsOneWidget);
+    expect(find.text('Browse to a folder of RAW files to begin.'),
+        findsOneWidget);
+    expect(find.text('No RAW files.\nChoose a folder to begin.'),
+        findsOneWidget);
+  });
+
+  testWidgets('every requested control is present and labelled',
+      (tester) async {
+    tester.view.physicalSize = _size;
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(harness(EditorViewState(
+      frame: syntheticFrameInfo(),
+      histogram: syntheticHistogram(),
+      photos: syntheticPhotos(),
+      // Present-but-null means "looked, and this file has no embedded JPEG".
+      // Leaving the map empty would mean "not looked yet", and the tiles would
+      // spin forever — which pumpAndSettle waits for.
+      thumbnails: {for (final p in syntheticPhotos()) p.path: null},
+      selected: 0,
+    )));
+    await tester.pumpAndSettle();
+
+    // The file name of the current image.
+    expect(find.text('20250803_A0A8111.CR3'), findsWidgets);
+    // Its histogram.
+    expect(find.textContaining('clipped black'), findsOneWidget);
+    // And one slider per requested adjustment, plus the export button.
+    for (final label in [
+      'Colour temperature',
+      'Black level',
+      'Shadow',
+      'Highlight',
+      'White level',
+      'Brightness',
+      'Contrast',
+      'Sharpness',
+    ]) {
+      expect(find.text(label), findsOneWidget, reason: 'missing $label');
+    }
+    expect(find.byType(Slider), findsNWidgets(8));
+    expect(find.text('Export'), findsOneWidget);
+
+    // As-shot temperature is shown, and the slider starts there.
+    expect(find.text('5787 K'), findsOneWidget);
+  });
+
+  testWidgets('a temperature the camera cannot express disables the control',
+      (tester) async {
+    tester.view.physicalSize = _size;
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final info = syntheticFrameInfo();
+    await tester.pumpWidget(harness(EditorViewState(
+      frame: FrameInfo(
+        path: info.path,
+        metadata: info.metadata,
+        asShot: const ColourTemperature(
+            kelvin: 5500, duv: 0.09, fromCameraTable: false, reliable: false),
+        minKelvin: 2000,
+        maxKelvin: 12000,
+        autoGreyPoint: info.autoGreyPoint,
+        medianEv: info.medianEv,
+        fullWidth: info.fullWidth,
+        fullHeight: info.fullHeight,
+        previewWidth: info.previewWidth,
+        previewHeight: info.previewHeight,
+      ),
+      histogram: syntheticHistogram(),
+    )));
+    await tester.pumpAndSettle();
+
+    final slider = tester.widgetList<Slider>(find.byType(Slider)).first;
+    expect(slider.onChanged, isNull);
+    expect(find.textContaining('too far off the Planckian locus'),
+        findsOneWidget);
+  });
+}
