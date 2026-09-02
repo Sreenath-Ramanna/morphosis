@@ -70,9 +70,14 @@ static void set_window_icon(GtkWindow* window) {
 // the constant across the language boundary.
 static void apply_compact_titlebar_css(void) {
   static const gchar* kCss =
+      // 26 + 2 px of padding renders as 32 px overall: GTK adds four more
+      // from the titlebar node the header bar sits inside, which no rule here
+      // reaches. The figure is calibrated by measuring a screenshot, not
+      // derived -- adjust it and measure again rather than doing the
+      // arithmetic.
       "headerbar {"
-      "  min-height: 0px;"
-      "  padding: 1px 2px;"
+      "  min-height: 26px;"
+      "  padding: 1px 4px;"
       "  background-image: none;"
       "  background-color: #1C1C20;"
       "  border-bottom: 1px solid #2E2E34;"
@@ -81,7 +86,7 @@ static void apply_compact_titlebar_css(void) {
       "headerbar button.titlebutton {"
       "  min-height: 0px;"
       "  min-width: 0px;"
-      "  padding: 1px 5px;"
+      "  padding: 3px 7px;"
       "  margin: 0px;"
       "  border: none;"
       "  box-shadow: none;"
