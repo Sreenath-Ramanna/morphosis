@@ -1,7 +1,7 @@
 # Morphosis
 
 A non-destructive camera RAW editor for Linux desktop, built on
-[raw_images_api](../raw_images_api).
+[raw_images_api](https://github.com/Sreenath-Ramanna/raw_images_api).
 
 Browse to a folder, pick a frame, and adjust colour temperature, four
 exposure zones, brightness, contrast and sharpness with the canvas following
@@ -63,7 +63,7 @@ Measured on a 24 MP NEF and a 33 MP CR3, release build:
 
 ## Design
 
-[raw_images_api's approach.md](../raw_images_api/approach.md) is the design
+[raw_images_api's approach.md](https://github.com/Sreenath-Ramanna/raw_images_api/blob/master/approach.md) is the design
 this implements. The short version, and the three places this app deviates
 from it — each deviation is argued at the point it happens in the source.
 
