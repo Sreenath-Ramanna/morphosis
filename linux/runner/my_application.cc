@@ -53,6 +53,52 @@ static void set_window_icon(GtkWindow* window) {
   }
 }
 
+// Slims the GNOME header bar down.
+//
+// The default is around 46 px of chrome carrying an application name the
+// window already states in its own toolbar, plus the three window buttons.
+//
+// Registered for the whole screen rather than on the header bar's own style
+// context. `gtk_style_context_add_provider` applies to that one widget's CSS
+// node and nothing below it, so the rule for the title buttons -- which are
+// children -- would never be consulted, and they alone hold the bar open at
+// its default height.
+//
+// Colours match Chrome.panel and Chrome.divider in lib/src/ui/theme.dart, so
+// the strip reads as the top edge of the application rather than as a foreign
+// band above it. A change there wants mirroring here; there is no way to share
+// the constant across the language boundary.
+static void apply_compact_titlebar_css(void) {
+  static const gchar* kCss =
+      "headerbar {"
+      "  min-height: 0px;"
+      "  padding: 1px 2px;"
+      "  background-image: none;"
+      "  background-color: #1C1C20;"
+      "  border-bottom: 1px solid #2E2E34;"
+      "  box-shadow: none;"
+      "}"
+      "headerbar button.titlebutton {"
+      "  min-height: 0px;"
+      "  min-width: 0px;"
+      "  padding: 1px 5px;"
+      "  margin: 0px;"
+      "  border: none;"
+      "  box-shadow: none;"
+      "  background-image: none;"
+      "}";
+
+  GdkScreen* screen = gdk_screen_get_default();
+  if (screen == nullptr) {
+    return;
+  }
+  g_autoptr(GtkCssProvider) provider = gtk_css_provider_new();
+  gtk_css_provider_load_from_data(provider, kCss, -1, nullptr);
+  gtk_style_context_add_provider_for_screen(
+      screen, GTK_STYLE_PROVIDER(provider),
+      GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+}
+
 // Implements GApplication::activate.
 static void my_application_activate(GApplication* application) {
   MyApplication* self = MY_APPLICATION(application);
@@ -79,9 +125,20 @@ static void my_application_activate(GApplication* application) {
   if (use_header_bar) {
     GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
     gtk_widget_show(GTK_WIDGET(header_bar));
-    gtk_header_bar_set_title(header_bar, "Morphosis");
+    // No title text: the application's own toolbar already carries the name
+    // and the icon, immediately below. Repeating it here bought nothing and
+    // was half of what made the bar tall.
     gtk_header_bar_set_show_close_button(header_bar, TRUE);
+    // An empty custom title. GtkHeaderBar otherwise reserves a title/subtitle
+    // box whose height it will not go below, whatever the CSS says.
+    GtkWidget* no_title = gtk_label_new(nullptr);
+    gtk_widget_show(no_title);
+    gtk_header_bar_set_custom_title(header_bar, no_title);
+    apply_compact_titlebar_css();
     gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
+    // Still set on the window, so the task switcher and the window list have
+    // something to show.
+    gtk_window_set_title(window, "Morphosis");
   } else {
     gtk_window_set_title(window, "Morphosis");
   }

@@ -31,6 +31,12 @@ RAW_IMAGES_API_DIR=/path/to/raw_images_api flutter build linux --release
 The resulting bundle loads `lib/libraw_images_api.so` from beside its own
 executable, so it relocates as a unit.
 
+The GNOME header bar is restyled to 25 px — the window buttons and nothing
+else, in the application's own colours. The name and the icon live in the
+toolbar immediately below it, so repeating them above bought nothing and cost
+most of the height. See `apply_compact_titlebar_css` in
+`linux/runner/my_application.cc`.
+
 ## Keyboard
 
 | key | |
