@@ -95,12 +95,19 @@ class AdjustSlider extends StatelessWidget {
           ),
           SizedBox(
             height: 22,
-            child: Slider(
-              value: value.clamp(min, max),
-              min: min,
-              max: max,
-              onChanged: enabled ? onChanged : null,
-              onChangeEnd: (_) => onChangeEnd?.call(),
+            // A focused Slider handles the arrow keys itself. That would make
+            // "left is the previous image" work only until the first time you
+            // touched a slider, and then quietly stop — the worst kind of
+            // keyboard binding. Excluding these from focus reserves the arrows
+            // for navigation; the sliders are still fully mouse-operable.
+            child: ExcludeFocus(
+              child: Slider(
+                value: value.clamp(min, max),
+                min: min,
+                max: max,
+                onChanged: enabled ? onChanged : null,
+                onChangeEnd: (_) => onChangeEnd?.call(),
+              ),
             ),
           ),
           if (note != null)

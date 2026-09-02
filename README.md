@@ -31,6 +31,25 @@ RAW_IMAGES_API_DIR=/path/to/raw_images_api flutter build linux --release
 The resulting bundle loads `lib/libraw_images_api.so` from beside its own
 executable, so it relocates as a unit.
 
+## Keyboard
+
+| key | |
+|---|---|
+| `←` `→` | previous / next frame in the folder |
+| `=` `-` | zoom in / out, about the centre of the view |
+
+Zoom steps by a quarter each press, between 0.5× and 8× — the same bounds a
+pinch is held to — and returns to fit-the-window when a new frame is opened.
+`+` and the numeric keypad's `+` and `-` do the same as `=` and `-`.
+
+Navigation clamps at the ends of the folder rather than wrapping, and is
+ignored while a decode is in flight, so holding a key does not queue up a
+second and a half of work per repeat.
+
+The sliders are deliberately excluded from keyboard focus. A focused Flutter
+`Slider` handles the arrow keys itself, which would make "left is the previous
+frame" work until the first time you touched a slider and then quietly stop.
+
 A folder can be passed on the command line, which skips the browse step:
 
 ```bash
@@ -241,6 +260,7 @@ lib/
       editor_screen.dart       state: opening files, coalescing renders
       editor_layout.dart       arrangement, as a function of that state
       controls_panel.dart      the control stack, in pipeline order
+      canvas_zoom.dart         the canvas transform, driveable from a key
       histogram_view.dart      three additive channel curves
       photo_list.dart          the folder, with embedded-JPEG thumbnails
       adjust_slider.dart       one slider, and the panel's small parts

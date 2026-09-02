@@ -19,6 +19,7 @@ import 'package:path/path.dart' as p;
 import '../model/edit.dart';
 import '../pipeline/processor.dart';
 import '../ria/ria.dart';
+import 'canvas_zoom.dart';
 import 'editor_layout.dart';
 import 'export_dialog.dart';
 import 'photo_list.dart';
@@ -63,6 +64,9 @@ class _EditorScreenState extends State<EditorScreen> {
   bool _exporting = false;
   String? _status;
 
+  /// Shared with the canvas, so the keyboard and the mouse move the same view.
+  final CanvasZoom _zoom = CanvasZoom();
+
   @override
   void initState() {
     super.initState();
@@ -73,6 +77,7 @@ class _EditorScreenState extends State<EditorScreen> {
   void dispose() {
     _processor?.dispose();
     _image?.dispose();
+    _zoom.dispose();
     super.dispose();
   }
 
@@ -165,6 +170,11 @@ class _EditorScreenState extends State<EditorScreen> {
     if (proc == null || index < 0 || index >= _photos.length) return;
     if (index == _selected && _frame != null) return;
 
+    // A new frame is shown fit-to-window. Inheriting the previous one's
+    // magnification would land the viewer somewhere arbitrary in a photograph
+    // they have not seen yet.
+    _zoom.reset();
+
     setState(() {
       _selected = index;
       _loading = true;
@@ -191,6 +201,18 @@ class _EditorScreenState extends State<EditorScreen> {
         _loadError = 'Could not decode ${_photos[index].name}: $e';
       });
     }
+  }
+
+  /// Step to an adjacent frame, for the arrow keys.
+  ///
+  /// Clamped rather than wrapping: at the end of a folder, pressing on should
+  /// do nothing rather than silently jump back to the start. Ignored while a
+  /// decode is in flight, so holding a key does not queue up a decode per
+  /// repeat — each one is a second and a half of work.
+  void _step(int delta) {
+    if (_loading || _photos.isEmpty) return;
+    final next = (_selected + delta).clamp(0, _photos.length - 1);
+    if (next != _selected) unawaited(_select(next));
   }
 
   void _updateEdit(Edit next) {
@@ -343,6 +365,9 @@ class _EditorScreenState extends State<EditorScreen> {
       onExport: _frame == null || _exporting ? null : _export,
       onSelect: (i) => unawaited(_select(i)),
       onEditChanged: _updateEdit,
+      onPreviousImage: () => _step(-1),
+      onNextImage: () => _step(1),
+      zoom: _zoom,
     );
   }
 }
