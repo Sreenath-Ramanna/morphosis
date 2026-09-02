@@ -162,6 +162,8 @@ Measured on a 24 MP NEF and a 33 MP CR3, release build:
 | full-resolution TIFF export | 5–7 s |
 | full-resolution JPEG export | 10–14 s |
 
+[PLAN.md](PLAN.md) covers the catalogue, which is planned and not yet built.
+
 ## Design
 
 [raw_images_api's approach.md](https://github.com/Sreenath-Ramanna/raw_images_api/blob/master/approach.md) is the design
