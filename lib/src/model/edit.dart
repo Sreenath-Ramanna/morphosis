@@ -8,6 +8,8 @@
 
 import 'dart:math' as math;
 
+import 'geometry.dart';
+
 /// The full ±3 EV range approach.md specifies for every EV-denominated
 /// control.
 const double evRange = 3.0;
@@ -41,6 +43,10 @@ class Edit {
   /// clipping them. Off reproduces what a plain decode does.
   final bool highlightRolloff;
 
+  /// Rotation and crop. Applied to the scene-referred buffer before anything
+  /// else, so the histogram and the automatic grey point describe the crop.
+  final Geometry geometry;
+
   const Edit({
     this.temperatureK,
     this.blackEv = 0,
@@ -51,6 +57,7 @@ class Edit {
     this.contrastEv = 0,
     this.sharpness = 0,
     this.highlightRolloff = false,
+    this.geometry = Geometry.identity,
   });
 
   static const Edit neutral = Edit();
@@ -64,7 +71,8 @@ class Edit {
       brightnessEv == 0 &&
       contrastEv == 0 &&
       sharpness == 0 &&
-      !highlightRolloff;
+      !highlightRolloff &&
+      geometry.isIdentity;
 
   Edit copyWith({
     double? temperatureK,
@@ -77,6 +85,7 @@ class Edit {
     double? contrastEv,
     double? sharpness,
     bool? highlightRolloff,
+    Geometry? geometry,
   }) =>
       Edit(
         temperatureK:
@@ -89,6 +98,7 @@ class Edit {
         contrastEv: contrastEv ?? this.contrastEv,
         sharpness: sharpness ?? this.sharpness,
         highlightRolloff: highlightRolloff ?? this.highlightRolloff,
+        geometry: geometry ?? this.geometry,
       );
 
   /// The grey point this edit implies, given the frame's automatic starting
@@ -107,9 +117,15 @@ class Edit {
       other.brightnessEv == brightnessEv &&
       other.contrastEv == contrastEv &&
       other.sharpness == sharpness &&
-      other.highlightRolloff == highlightRolloff;
+      other.highlightRolloff == highlightRolloff &&
+      other.geometry == geometry;
 
   @override
   int get hashCode => Object.hash(temperatureK, blackEv, shadowEv, highlightEv,
-      whiteEv, brightnessEv, contrastEv, sharpness, highlightRolloff);
+      whiteEv, brightnessEv, contrastEv, sharpness, highlightRolloff,
+      geometry);
+
+  /// True when only the tonal controls differ, so a re-render can reuse the
+  /// cached geometry-applied buffer instead of resampling again.
+  bool sameGeometryAs(Edit other) => other.geometry == geometry;
 }

@@ -17,12 +17,14 @@ import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
 import '../model/edit.dart';
+import '../model/geometry.dart';
 import '../pipeline/processor.dart';
 import '../ria/ria.dart';
 import 'canvas_zoom.dart';
 import 'editor_layout.dart';
 import 'export_dialog.dart';
 import 'photo_list.dart';
+import 'right_panel.dart';
 
 class EditorScreen extends StatefulWidget {
   final String? initialFolder;
@@ -63,6 +65,8 @@ class _EditorScreenState extends State<EditorScreen> {
 
   bool _exporting = false;
   String? _status;
+
+  EditorTab _tab = EditorTab.colour;
 
   /// Shared with the canvas, so the keyboard and the mouse move the same view.
   final CanvasZoom _zoom = CanvasZoom();
@@ -182,6 +186,7 @@ class _EditorScreenState extends State<EditorScreen> {
       // A new frame starts neutral. Carrying an edit across would apply one
       // photograph's decisions to another, and the grey point that anchors
       // the zone controls is a property of the frame, not of the session.
+      // A crop especially: it names a region of one photograph.
       _edit = Edit.neutral;
       _histogram = null;
     });
@@ -220,6 +225,28 @@ class _EditorScreenState extends State<EditorScreen> {
     unawaited(_render());
   }
 
+  void _updateGeometry(Geometry next) {
+    // Straightening shrinks the region with no blank corner, so a crop placed
+    // before the frame was levelled has to be pulled inside the new bounds.
+    // Done here rather than in the renderer so that what the rectangle shows
+    // and what gets exported cannot disagree.
+    final frame = _frame;
+    final bounds = frame == null
+        ? CropRect.full
+        : next.straightenBounds(frame.previewWidth, frame.previewHeight);
+    final fitted = next.copyWith(crop: next.crop.fittedInside(bounds));
+    _updateEdit(_edit.copyWith(geometry: fitted));
+  }
+
+  void _setTab(EditorTab tab) {
+    if (tab == _tab) return;
+    setState(() => _tab = tab);
+    // The crop tool shows the uncropped frame and the editor shows the
+    // cropped one, so switching between them is a re-render even though the
+    // edit has not changed.
+    unawaited(_render());
+  }
+
   Future<void> _render() async {
     final proc = _processor;
     if (proc == null || _frame == null) return;
@@ -231,7 +258,8 @@ class _EditorScreenState extends State<EditorScreen> {
     var edit = _edit;
     try {
       while (true) {
-        final result = await proc.render(edit);
+        final result =
+            await proc.render(edit, suppressCrop: _tab == EditorTab.crop);
         if (!mounted) return;
 
         final image = await _decodeImage(result);
@@ -355,6 +383,7 @@ class _EditorScreenState extends State<EditorScreen> {
         histogram: _histogram,
         edit: _edit,
         softLimitFactor: _softLimit,
+        tab: _tab,
         loading: _loading,
         exporting: _exporting,
         status: _status,
@@ -367,6 +396,8 @@ class _EditorScreenState extends State<EditorScreen> {
       onEditChanged: _updateEdit,
       onPreviousImage: () => _step(-1),
       onNextImage: () => _step(1),
+      onTabChanged: _setTab,
+      onGeometryChanged: _updateGeometry,
       zoom: _zoom,
     );
   }

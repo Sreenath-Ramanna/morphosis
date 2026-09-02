@@ -14,9 +14,11 @@ import 'dart:isolate';
 import 'dart:typed_data';
 
 import '../model/edit.dart';
+import '../model/geometry.dart';
 import '../ria/ria.dart';
 import 'colour_temp.dart';
 import 'export.dart';
+import 'geometry_ops.dart';
 import 'render.dart';
 import 'tone.dart';
 
@@ -97,7 +99,13 @@ class _OpenReq extends _Req {
 
 class _RenderReq extends _Req {
   final Edit edit;
-  const _RenderReq(super.id, this.edit);
+
+  /// The crop tool shows the whole straightened frame with a rectangle drawn
+  /// over it, so it asks for a render with the crop suppressed. Everything
+  /// else is unchanged, including the geometry cache key.
+  final bool suppressCrop;
+
+  const _RenderReq(super.id, this.edit, this.suppressCrop);
 }
 
 class _ThumbReq extends _Req {
@@ -176,8 +184,8 @@ class Processor {
   Future<FrameInfo> open(String path) =>
       _send<FrameInfo>((id) => _OpenReq(id, path));
 
-  Future<RenderResult> render(Edit edit) =>
-      _send<RenderResult>((id) => _RenderReq(id, edit));
+  Future<RenderResult> render(Edit edit, {bool suppressCrop = false}) =>
+      _send<RenderResult>((id) => _RenderReq(id, edit, suppressCrop));
 
   /// The camera's embedded JPEG, for the folder list. Null when the file has
   /// none in a format we can hand to Flutter.
@@ -217,14 +225,25 @@ void _workerMain(_Boot boot) {
 }
 
 class _Worker {
+  /// The frame as decoded — never modified, and the input every geometry is
+  /// applied to. Keeping the original means a crop can be reopened and
+  /// widened again without going back to the file.
   SceneImage? _scene;
-  WhiteBalance? _wb;
+
+  /// The frame with the current geometry applied, and the grey point measured
+  /// from it. Cached because resampling a 1.7 MP buffer is tens of
+  /// milliseconds and the geometry only changes when a crop handle moves —
+  /// not on every tonal slider frame.
+  SceneImage? _working;
+  Geometry? _workingGeometry;
   double _autoGrey = middleGrey;
+
+  WhiteBalance? _wb;
   DisplayBuffer? _buffer;
 
   Object? handle(_Req req) {
     if (req is _OpenReq) return _open(req.path);
-    if (req is _RenderReq) return _render(req.edit);
+    if (req is _RenderReq) return _render(req.edit, req.suppressCrop);
     if (req is _ThumbReq) return _thumb(req.path);
     if (req is _CloseReq) {
       _release();
@@ -250,11 +269,9 @@ class _Worker {
       final wb = WhiteBalance.from(f.colorData());
       final scene = f.decodeSceneLinear(maxEdge: previewMaxEdge);
 
-      final zones = ZoneHistogram.compute(scene.data, scene.width, scene.height);
-
       _scene = scene;
       _wb = wb;
-      _autoGrey = zones.autoGreyPoint();
+      final working = _ensureWorking(Geometry.identity);
 
       return FrameInfo(
         path: path,
@@ -263,24 +280,47 @@ class _Worker {
         minKelvin: wb.minKelvin,
         maxKelvin: wb.maxKelvin,
         autoGreyPoint: _autoGrey,
-        medianEv: zones.medianEv,
+        medianEv: _medianEv,
         fullWidth: meta.width,
         fullHeight: meta.height,
-        previewWidth: scene.width,
-        previewHeight: scene.height,
+        previewWidth: working.width,
+        previewHeight: working.height,
       );
     } finally {
       f.close();
     }
   }
 
-  RenderResult _render(Edit edit) {
-    final scene = _scene;
+  double _medianEv = 0;
+
+  /// Rebuild the geometry-applied buffer when the geometry has changed, and
+  /// re-measure the grey point from it — a crop changes which pixels the
+  /// automatic exposure is derived from, which is the point of doing the
+  /// geometry first.
+  SceneImage _ensureWorking(Geometry geometry) {
+    final scene = _scene!;
+    if (_working != null && _workingGeometry == geometry) return _working!;
+
+    final working = applyGeometry(scene, geometry);
+    final zones =
+        ZoneHistogram.compute(working.data, working.width, working.height);
+    _working = working;
+    _workingGeometry = geometry;
+    _autoGrey = zones.autoGreyPoint();
+    _medianEv = zones.medianEv;
+    return working;
+  }
+
+  RenderResult _render(Edit edit, bool suppressCrop) {
     final wb = _wb;
-    if (scene == null || wb == null) {
+    if (_scene == null || wb == null) {
       throw StateError('no frame is open');
     }
     final sw = Stopwatch()..start();
+
+    final geometry =
+        suppressCrop ? edit.geometry.withoutCrop : edit.geometry;
+    final scene = _ensureWorking(geometry);
 
     final tone = _toneFor(edit, _autoGrey);
     final gainLut = tone.buildGainLut();
@@ -319,6 +359,8 @@ class _Worker {
     _buffer?.dispose();
     _buffer = null;
     _scene = null;
+    _working = null;
+    _workingGeometry = null;
     _wb = null;
   }
 }
@@ -394,14 +436,19 @@ Future<String> runExport(ExportRequest req) async {
   Ria.libraryPathOverride = req.soPath;
 
   final f = RawFile.open(req.sourcePath);
-  final SceneImage scene;
+  final SceneImage decoded;
   final WhiteBalance wb;
   try {
     wb = WhiteBalance.from(f.colorData());
-    scene = f.decodeSceneLinear();
+    decoded = f.decodeSceneLinear();
   } finally {
     f.close();
   }
+
+  // Same geometry, same code, at full resolution. The crop is expressed in
+  // fractions of the frame rather than in pixels precisely so that it means
+  // the same thing here as it did on the preview.
+  final scene = applyGeometry(decoded, req.edit.geometry);
 
   // The grey point is recomputed from the full-resolution frame rather than
   // carried over. It is a percentile, and a percentile of a downsampled image

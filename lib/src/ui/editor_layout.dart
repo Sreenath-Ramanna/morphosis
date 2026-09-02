@@ -15,11 +15,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../model/edit.dart';
+import '../model/geometry.dart';
 import '../pipeline/processor.dart';
 import '../ria/ria.dart';
 import 'canvas_zoom.dart';
 import 'controls_panel.dart';
+import 'crop_overlay.dart';
+import 'crop_panel.dart';
 import 'photo_list.dart';
+import 'right_panel.dart';
 import 'theme.dart';
 
 /// Everything the arrangement needs to know.
@@ -34,6 +38,11 @@ class EditorViewState {
   final Histogram? histogram;
   final Edit edit;
   final double softLimitFactor;
+
+  /// Which right-hand tab is open. The canvas reads it too: crop mode shows
+  /// the whole straightened frame with a rectangle over it, and switches pan
+  /// and zoom off.
+  final EditorTab tab;
 
   final bool loading;
   final bool exporting;
@@ -51,6 +60,7 @@ class EditorViewState {
     this.histogram,
     this.edit = Edit.neutral,
     this.softLimitFactor = 1.0,
+    this.tab = EditorTab.colour,
     this.loading = false,
     this.exporting = false,
     this.status,
@@ -107,6 +117,9 @@ class EditorLayout extends StatelessWidget {
   final VoidCallback? onPreviousImage;
   final VoidCallback? onNextImage;
 
+  final ValueChanged<EditorTab>? onTabChanged;
+  final ValueChanged<Geometry>? onGeometryChanged;
+
   /// The canvas transform, shared so the keyboard and the mouse drive the same
   /// state. Null gives the canvas its own private one, which is what the
   /// layout tests want.
@@ -121,6 +134,8 @@ class EditorLayout extends StatelessWidget {
     required this.onEditChanged,
     this.onPreviousImage,
     this.onNextImage,
+    this.onTabChanged,
+    this.onGeometryChanged,
     this.zoom,
   });
 
@@ -174,18 +189,27 @@ class EditorLayout extends StatelessWidget {
                   ),
                 ),
                 const VerticalDivider(width: 1),
-                Expanded(child: _Canvas(state: state, zoom: zoom)),
+                Expanded(
+                  child: _Canvas(
+                    state: state,
+                    zoom: zoom,
+                    onGeometryChanged: onGeometryChanged,
+                  ),
+                ),
                 const VerticalDivider(width: 1),
                 SizedBox(
                   width: 320,
                   child: ColoredBox(
                     color: Chrome.panel,
-                    child: ControlsPanel(
-                      frame: state.frame,
-                      edit: state.edit,
-                      histogram: state.histogram,
-                      softLimitFactor: state.softLimitFactor,
-                      onChanged: onEditChanged,
+                    child: Column(
+                      children: [
+                        TabStrip(
+                          active: state.tab,
+                          onChanged: onTabChanged ?? (_) {},
+                          disabled: const {EditorTab.masks},
+                        ),
+                        Expanded(child: _tabBody()),
+                      ],
                     ),
                   ),
                 ),
@@ -197,6 +221,27 @@ class EditorLayout extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  Widget _tabBody() {
+    switch (state.tab) {
+      case EditorTab.colour:
+        return ControlsPanel(
+          frame: state.frame,
+          edit: state.edit,
+          histogram: state.histogram,
+          softLimitFactor: state.softLimitFactor,
+          onChanged: onEditChanged,
+        );
+      case EditorTab.crop:
+        return CropPanel(
+          frame: state.frame,
+          geometry: state.edit.geometry,
+          onChanged: onGeometryChanged ?? (_) {},
+        );
+      case EditorTab.masks:
+        return const MasksPanel();
+    }
   }
 }
 
@@ -232,8 +277,13 @@ class LibraryMissingScreen extends StatelessWidget {
 class _Canvas extends StatelessWidget {
   final EditorViewState state;
   final CanvasZoom? zoom;
+  final ValueChanged<Geometry>? onGeometryChanged;
 
-  const _Canvas({required this.state, this.zoom});
+  const _Canvas({
+    required this.state,
+    this.zoom,
+    this.onGeometryChanged,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -242,7 +292,15 @@ class _Canvas extends StatelessWidget {
       color: Chrome.canvas,
       child: Stack(
         children: [
-          if (image != null)
+          if (image != null && state.tab == EditorTab.crop)
+            Positioned.fill(
+              child: CropCanvas(
+                image: image,
+                geometry: state.edit.geometry,
+                onChanged: onGeometryChanged ?? (_) {},
+              ),
+            )
+          else if (image != null)
             Positioned.fill(
               // The zoom controller has to know how large the view is, or a
               // keyboard zoom has no centre to scale about.

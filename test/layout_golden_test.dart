@@ -215,7 +215,10 @@ void main() {
     expect(find.text('20250803_A0A8111.CR3'), findsWidgets);
     // Its histogram.
     expect(find.textContaining('clipped black'), findsOneWidget);
-    // And one slider per requested adjustment, plus the export button.
+    // And one slider per requested adjustment, plus the export button. The
+    // panel scrolls, and a ListView does not build what is off screen, so the
+    // later controls have to be scrolled to rather than merely looked for.
+    final panel = find.byType(Scrollable).last;
     for (final label in [
       'Colour temperature',
       'Black level',
@@ -226,9 +229,10 @@ void main() {
       'Contrast',
       'Sharpness',
     ]) {
+      await tester.scrollUntilVisible(find.text(label), 120,
+          scrollable: panel);
       expect(find.text(label), findsOneWidget, reason: 'missing $label');
     }
-    expect(find.byType(Slider), findsNWidgets(8));
     expect(find.text('Export'), findsOneWidget);
 
     // As-shot temperature is shown, and the slider starts there.

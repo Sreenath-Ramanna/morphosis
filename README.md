@@ -37,6 +37,50 @@ toolbar immediately below it, so repeating them above bought nothing and cost
 most of the height. See `apply_compact_titlebar_css` in
 `linux/runner/my_application.cc`.
 
+## The three tabs
+
+**Colour** holds every tonal control: white balance, the four exposure zones,
+brightness, contrast and sharpness, with the histogram above them.
+
+**Crop** holds rotation in quarter turns, a straighten slider, and the aspect
+constraints; the rectangle itself is dragged on the canvas, where pan and zoom
+are switched off so the two gestures cannot be confused and the whole frame
+stays visible.
+
+**Masks** is a placeholder. It will hold selections that confine an adjustment
+to part of the frame — a sky, a face, a shadow — and it says so rather than
+being hidden, since a tab strip that grows an entry later moves the others
+under the cursor.
+
+### Where geometry happens
+
+Rotation and crop are applied to the **scene-referred buffer, before the tone
+engine**, and the result is cached until the geometry changes again. Three
+things follow, and all three are the reason for the ordering:
+
+- Resampling is an average of neighbouring pixels, and an average only means
+  anything where the values are proportional to light. Averaging
+  gamma-encoded values darkens every edge it touches by an amount that depends
+  on the local contrast — the same argument that puts exposure in the
+  scene-referred domain puts rotation there.
+- The histogram and the automatic grey point are measured from the cropped
+  buffer, so both describe what the viewer is looking at rather than the frame
+  it was cut from. Cropping to a bright corner re-exposes the image, which is
+  what an editor is expected to do.
+- The tone pass is unchanged and still runs its fast path, because the
+  geometry has already been resolved by the time it sees the pixels.
+
+The crop is stored as fractions of the frame rather than pixels, so it means
+the same thing on the 1600 px preview and on the full-resolution export. That
+is asserted end to end: `tool/pipeline_check.dart` exports a turned,
+straightened, cropped frame and checks the file's own dimensions against what
+the geometry predicts.
+
+Straightening leaves wedges of nothing at the corners, so the crop is pulled
+in to the largest rectangle that fits entirely inside the turned frame. A crop
+placed before the frame was levelled is fitted inside those new bounds rather
+than being allowed to reveal black.
+
 ## Keyboard
 
 | key | |
@@ -253,12 +297,14 @@ lib/
   main.dart                    entry point; optional folder argument
   src/
     model/edit.dart            the edit — one immutable value
+    model/geometry.dart        rotation and crop, as a value
     ria/
       bindings.dart            dart:ffi declarations, mirroring raw_images_api.h
       ria.dart                 open, decode, sharpen, measure
     pipeline/
       colour_temp.dart         CCT, tint, and the re-balancing matrix
       tone.dart                zone basis, tone curve, display table
+      geometry_ops.dart        rotation and crop, on scene-referred pixels
       render.dart              the fused pass, and the EV histogram
       export.dart              TIFF writer, JPEG encoder, the one file write
       processor.dart           the worker isolate and the export isolate
@@ -267,6 +313,9 @@ lib/
       editor_layout.dart       arrangement, as a function of that state
       controls_panel.dart      the control stack, in pipeline order
       canvas_zoom.dart         the canvas transform, driveable from a key
+      right_panel.dart         the tab strip, and the masks placeholder
+      crop_panel.dart          rotate, straighten and aspect controls
+      crop_overlay.dart        the crop rectangle, dragged on the canvas
       histogram_view.dart      three additive channel curves
       photo_list.dart          the folder, with embedded-JPEG thumbnails
       adjust_slider.dart       one slider, and the panel's small parts

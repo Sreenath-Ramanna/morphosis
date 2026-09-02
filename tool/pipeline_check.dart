@@ -16,6 +16,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:morphosis/src/model/edit.dart';
+import 'package:morphosis/src/model/geometry.dart';
 import 'package:morphosis/src/pipeline/colour_temp.dart';
 import 'package:morphosis/src/pipeline/export.dart';
 import 'package:morphosis/src/pipeline/processor.dart';
@@ -189,6 +190,36 @@ Future<int> _check(String path, String outDir) async {
     check(size > 10000, '${format.label} export is not empty');
   }
 
+  // Geometry has to survive the jump to full resolution. The crop is stored
+  // as fractions of the frame precisely so that it means the same thing on a
+  // 1600 px preview and on a 33 MP export; this is the check that it does.
+  {
+    const geometry = Geometry(
+      quarterTurns: 1,
+      straightenDegrees: 4,
+      crop: CropRect(0.15, 0.1, 0.85, 0.7),
+    );
+    final target = p.join(outDir, '$base-cropped.jpg');
+    sw.reset();
+    await runExport(ExportRequest(
+      soPath: Ria.libraryPathOverride!,
+      sourcePath: path,
+      targetPath: target,
+      edit: edit.copyWith(geometry: geometry),
+      format: ExportFormat.jpeg,
+      jpegQuality: defaultJpegQuality,
+      previewMaxEdge: previewMaxEdge,
+    ));
+    final (ew, eh) = geometry.outputSize(meta.width, meta.height);
+    final (aw, ah) = _jpegSize(await File(target).readAsBytes());
+    print('  cropped JPEG ${sw.elapsedMilliseconds} ms → '
+        '${aw}x$ah, expected ${ew}x$eh');
+    check(aw == ew && ah == eh,
+        'the export is cropped and turned to the size the geometry implies');
+    check(ew < meta.width && eh < meta.height,
+        'and is smaller than the frame it came from');
+  }
+
   // The point of the whole exercise.
   check(await _digest(path) == before && await File(path).length() == sizeBefore,
       'the RAW file is byte-identical after all of that');
@@ -271,6 +302,29 @@ Float64List _matrix(WhiteBalance wb, double kelvin) {
 }
 
 double _log2(double v) => v > 0 ? math.log(v) / math.ln2 : 0;
+
+/// Width and height from a JPEG's SOF marker, so the export can be measured
+/// without decoding it.
+(int, int) _jpegSize(Uint8List b) {
+  var i = 2;
+  while (i + 9 < b.length) {
+    if (b[i] != 0xFF) {
+      i++;
+      continue;
+    }
+    final marker = b[i + 1];
+    // SOF0..SOF15, excluding the four that are not frame headers.
+    if (marker >= 0xC0 &&
+        marker <= 0xCF &&
+        marker != 0xC4 &&
+        marker != 0xC8 &&
+        marker != 0xCC) {
+      return ((b[i + 7] << 8) | b[i + 8], (b[i + 5] << 8) | b[i + 6]);
+    }
+    i += 2 + ((b[i + 2] << 8) | b[i + 3]);
+  }
+  return (0, 0);
+}
 
 Future<String> _digest(String path) async {
   // A plain content hash; the check is "unchanged", not "authentic".
