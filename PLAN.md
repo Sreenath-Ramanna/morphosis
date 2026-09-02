@@ -128,26 +128,26 @@ Start with the system library and revisit only if a target platform lacks it.
 
 ---
 
-## 3. Where the database lives
+## 3. Where things live
 
 ```
-${XDG_DATA_HOME:-~/.local/share}/morphosis/catalog.db
+~/.local/share/com.morphosis.morphosis/catalog.db    the catalogue
+~/.config/com.morphosis.morphosis/                   preferences, when there are any
+~/.local/lib/morphosis/                              the application bundle
+~/.local/bin/morphosis                               symlink to it
 ```
 
-**Not** under `~/.local/share/com.morphosis.morphosis/`. That is where
-`scripts/install.sh` puts the application bundle, and the script begins with
+XDG paths throughout, honouring `XDG_DATA_HOME`, `XDG_CONFIG_HOME` and
+`XDG_BIN_HOME` where set. The catalogue is user data — keywords typed and
+edits made, which nothing can regenerate — so it sits in the data directory
+under the application id, not in the config directory.
 
-```bash
-rm -rf "$PREFIX"
-```
-
-so a database placed there would be destroyed by every install — silently,
-and only noticed later when a year of keywords had gone. The catalogue is user
-data and belongs in its own directory beside the bundle, not inside it.
-
-Worth adding to the install script as it is touched: refuse to run if
-`$PREFIX` ends up containing a `.db` file, so this cannot be reintroduced by
-accident.
+**`scripts/install.sh` has to move the bundle out of
+`~/.local/share/com.morphosis.morphosis/` before Phase B.** It installs there
+today and begins by deleting that directory, so a catalogue written to the
+path above would be destroyed by every install. Moving the bundle to
+`~/.local/lib/morphosis/` frees the data directory and is the prerequisite,
+not a nicety.
 
 ---
 
@@ -444,9 +444,11 @@ required, cheap to add later, out of scope now.
 
 ## 12. Risks
 
-**The install script deletes its own prefix.** §3. This is the one that
-destroys user data rather than merely annoying, and it is easy to get wrong,
-because putting the database next to the binary looks tidy.
+**The install script deletes its own prefix.** Until the bundle is moved out
+of `~/.local/share/com.morphosis.morphosis/` (§3), writing the catalogue to
+the path this plan specifies would destroy it on every install. This is the
+one risk here that loses user data rather than merely annoying, and it fails
+silently.
 
 **Pure-Dart hashing is fifteen times slower than the hardware can do it.**
 Tolerable at 0.3 s per frame in the background; not tolerable if a "hash this
@@ -472,7 +474,7 @@ the year, which is the hardest kind of wrong to notice.
 | | | effort |
 |---|---|---|
 | **A** | `CatalogStore`, `CatalogEntry`, `KeywordSet`, `MemoryCatalog`, and the tests they share | 1 |
-| **B** | `SqliteCatalogStore`, migrations, `CatalogService` isolate. Phase A's tests run against both | 1.5 |
+| **B** | Move the bundle to `~/.local/lib/morphosis/` in `install.sh` (§3), then `SqliteCatalogStore`, migrations, `CatalogService` isolate. Phase A's tests run against both | 1.5 |
 | **C** | `Edit.toJson`/`fromJson` with versioning; `timestamp` through to `RawMetadata`; streaming digest on an isolate | 1 |
 | **D** | The keyword panel, the wider column, autocomplete, and the write policy in §8 | 1.5 |
 | **E** | *Unscheduled.* A native SHA-256 in `raw_images_api`, only if measurement asks for it | 0.5 |
