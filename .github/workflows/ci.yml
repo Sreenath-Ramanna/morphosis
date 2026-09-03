@@ -1,0 +1,171 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      ria_ref:
+        description: Ref of raw_images_api to build against
+        default: master
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: 3.41.9
+  RIA_REF: ${{ github.event.inputs.ria_ref || 'master' }}
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+
+      # The suite needs neither a display nor the native library: the tests
+      # that would want a real RAW file skip themselves when it is absent.
+      - name: Test
+        run: flutter test --exclude-tags golden
+
+  golden:
+    name: golden (advisory)
+    runs-on: ubuntu-latest
+    # The golden is an engine render, so it is tied to the exact Flutter
+    # version that produced it. A mismatch here means "look at the image and
+    # decide", not "the build is broken" — hence advisory. Judge it from the
+    # uploaded diff, and regenerate with:
+    #   flutter test --update-goldens test/layout_golden_test.dart
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter test --tags golden
+      - name: Upload the failure images
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-failures
+          path: test/failures/
+          if-no-files-found: ignore
+
+  ffi:
+    name: FFI stamp
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out raw_images_api
+        uses: actions/checkout@v4
+        with:
+          repository: Sreenath-Ramanna/raw_images_api
+          ref: ${{ env.RIA_REF }}
+          path: _deps/raw_images_api
+          # Only needed if the library repository is ever made private.
+          token: ${{ secrets.RIA_TOKEN || github.token }}
+
+      # lib/src/ria/bindings.dart mirrors raw_images_api.h by hand and nothing
+      # catches a mismatch at build time. The stamp records the header the
+      # bindings were last reconciled against; this is where a change on the
+      # library's side gets noticed, since that is a different repository.
+      - name: Header digest against the recorded stamp
+        run: ./scripts/check-ffi.sh --stamp _deps/raw_images_api/include/raw_images_api.h
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out raw_images_api
+        uses: actions/checkout@v4
+        with:
+          repository: Sreenath-Ramanna/raw_images_api
+          ref: ${{ env.RIA_REF }}
+          path: _deps/raw_images_api
+          token: ${{ secrets.RIA_TOKEN || github.token }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libraw-dev cmake ninja-build pkg-config clang libgtk-3-dev libomp-dev \
+            desktop-file-utils
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+
+      - name: Build the release bundle
+        env:
+          RAW_IMAGES_API_DIR: ${{ github.workspace }}/_deps/raw_images_api
+        run: flutter build linux --release
+
+      # The library is loaded by name at runtime through dart:ffi, never linked
+      # into the runner, so a missing .so or a missing symbol is not a link
+      # error — it is a crash the first time that code path runs.
+      - name: The bundle carries the library
+        run: |
+          BUNDLE=build/linux/x64/release/bundle
+          test -x "$BUNDLE/morphosis"
+          test -f "$BUNDLE/lib/libraw_images_api.so"
+          ldd "$BUNDLE/lib/libraw_images_api.so"
+
+      - name: Every looked-up symbol is exported
+        run: ./scripts/check-ffi.sh --symbols build/linux/x64/release/bundle/lib/libraw_images_api.so
+
+      # Under Wayland the compositor takes the icon from the .desktop file it
+      # matches by app id, so a disagreement between these three files is a
+      # launcher entry that silently loses its icon — no error anywhere.
+      - name: The app id agrees everywhere
+        run: |
+          ID=$(sed -n 's/^set(APPLICATION_ID "\(.*\)")$/\1/p' linux/CMakeLists.txt)
+          test -n "$ID" || { echo "No APPLICATION_ID in linux/CMakeLists.txt" >&2; exit 1; }
+          echo "app id: $ID"
+          grep -q "^APP_ID=\"$ID\"$" scripts/install.sh \
+            || { echo "scripts/install.sh disagrees" >&2; exit 1; }
+          DESKTOP="linux/packaging/$ID.desktop"
+          test -f "$DESKTOP" || { echo "No $DESKTOP" >&2; exit 1; }
+          grep -q "^Icon=$ID$" "$DESKTOP" || { echo "$DESKTOP: wrong Icon=" >&2; exit 1; }
+          grep -q "^StartupWMClass=$ID$" "$DESKTOP" \
+            || { echo "$DESKTOP: wrong StartupWMClass=" >&2; exit 1; }
+          sed "s|@EXEC@|/usr/bin/true|" "$DESKTOP" > /tmp/check.desktop
+          desktop-file-validate /tmp/check.desktop
+
+      - name: Upload the bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: morphosis-linux-x64
+          path: build/linux/x64/release/bundle/
+          retention-days: 7

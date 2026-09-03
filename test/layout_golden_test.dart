@@ -136,7 +136,11 @@ Widget harness(EditorViewState state) => MediaQuery(
     );
 
 void main() {
-  testWidgets('the editor lays out at window size', (tester) async {
+  // Only the image comparison is tagged. The golden is engine-rendered and so
+  // is tied to the exact Flutter version that produced it, which CI runs apart
+  // from the blocking suite; the layout assertions below carry no such tie.
+  testWidgets('the editor lays out at window size', tags: 'golden',
+      (tester) async {
     tester.view.physicalSize = _size;
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);

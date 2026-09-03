@@ -1,0 +1,6 @@
+# Tag definitions for `flutter test --tags` / `--exclude-tags`.
+tags:
+  # Renders the editor against a committed image. Engine-rendered, so it is
+  # tied to the Flutter version that produced the golden; CI runs it as a
+  # separate, non-blocking job.
+  golden:
