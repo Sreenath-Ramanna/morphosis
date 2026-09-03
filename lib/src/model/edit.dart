@@ -128,4 +128,82 @@ class Edit {
   /// True when only the tonal controls differ, so a re-render can reuse the
   /// cached geometry-applied buffer instead of resampling again.
   bool sameGeometryAs(Edit other) => other.geometry == geometry;
+
+  // ── Serialisation ───────────────────────────────────────────────────────
+  //
+  // An edit outlives the build that made it, which is what the version is for.
+  // Three rules, from PLAN.md section 6:
+  //
+  //   Every document carries `v`. It is the whole reason a stored edit
+  //   survives the app changing.
+  //
+  //   Absent means default, never zero. A field added in v2 is missing from
+  //   every v1 document, so `fromJson` fills from this class's own defaults —
+  //   an old document reads as an old edit rather than as one with a black
+  //   point of zero the photographer never chose.
+  //
+  //   Only what the photographer chose. No derived values: not the automatic
+  //   grey point, not the render time, not the preview size. Those are
+  //   properties of the decode and will be recomputed.
+
+  /// The version this build writes. Bump it when a field changes meaning —
+  /// not when one is merely added, which the default rule already covers.
+  static const int jsonVersion = 1;
+
+  Map<String, Object?> toJson() => {
+        'v': jsonVersion,
+        // Omitted entirely when null, because null is "as shot" and absent
+        // means default: writing it as a number would freeze whatever the
+        // camera happened to record into a choice the photographer never made.
+        if (temperatureK != null) 'temperatureK': temperatureK,
+        'blackEv': blackEv,
+        'shadowEv': shadowEv,
+        'highlightEv': highlightEv,
+        'whiteEv': whiteEv,
+        'brightnessEv': brightnessEv,
+        'contrastEv': contrastEv,
+        'sharpness': sharpness,
+        'highlightRolloff': highlightRolloff,
+        'geometry': geometry.toJson(),
+      };
+
+  /// Rebuild a stored edit.
+  ///
+  /// Accepts every version this build has ever written. A document from a
+  /// *newer* build throws instead: an older reader refusing a newer document
+  /// is better than one silently misreading it, which is the same reasoning
+  /// PLAN.md section 5 applies to the schema.
+  factory Edit.fromJson(Map<String, Object?> json) {
+    final v = (json['v'] as num?)?.toInt();
+    if (v == null) {
+      throw const FormatException('A stored edit has no version.');
+    }
+    if (v > jsonVersion) {
+      throw FormatException(
+          'A stored edit is version $v; this build reads up to $jsonVersion.');
+    }
+
+    // Every read goes through a default. Unknown keys are ignored rather than
+    // rejected, so a v1 build survives meeting a document a v2 build wrote.
+    const defaults = Edit.neutral;
+    double d(String key, double fallback) =>
+        (json[key] as num?)?.toDouble() ?? fallback;
+
+    final geometry = json['geometry'];
+    return Edit(
+      temperatureK: (json['temperatureK'] as num?)?.toDouble(),
+      blackEv: d('blackEv', defaults.blackEv),
+      shadowEv: d('shadowEv', defaults.shadowEv),
+      highlightEv: d('highlightEv', defaults.highlightEv),
+      whiteEv: d('whiteEv', defaults.whiteEv),
+      brightnessEv: d('brightnessEv', defaults.brightnessEv),
+      contrastEv: d('contrastEv', defaults.contrastEv),
+      sharpness: d('sharpness', defaults.sharpness),
+      highlightRolloff:
+          json['highlightRolloff'] as bool? ?? defaults.highlightRolloff,
+      geometry: geometry is Map<String, Object?>
+          ? Geometry.fromJson(geometry)
+          : defaults.geometry,
+    );
+  }
 }

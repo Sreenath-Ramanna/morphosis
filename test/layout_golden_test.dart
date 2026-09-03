@@ -18,6 +18,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:morphosis/src/catalog/catalog.dart';
 import 'package:morphosis/src/model/edit.dart';
 import 'package:morphosis/src/pipeline/colour_temp.dart';
 import 'package:morphosis/src/pipeline/processor.dart';
@@ -80,7 +81,7 @@ Histogram syntheticHistogram() {
 
 FrameInfo syntheticFrameInfo() => FrameInfo(
       path: '/home/photos/2026-09-02/20250803_A0A8111.CR3',
-      metadata: const RawMetadata(
+      metadata: RawMetadata(
         make: 'Canon',
         model: 'EOS R7',
         lens: 'RF100-500mm F4.5-7.1 L IS USM',
@@ -90,6 +91,7 @@ FrameInfo syntheticFrameInfo() => FrameInfo(
         focalLen: 500,
         width: 6984,
         height: 4660,
+        capturedAt: DateTime.utc(2025, 8, 2, 20, 6, 47),
       ),
       asShot: const ColourTemperature(
         kelvin: 5787,
@@ -106,6 +108,26 @@ FrameInfo syntheticFrameInfo() => FrameInfo(
       previewWidth: 1600,
       previewHeight: 1068,
     );
+
+/// A frame the catalogue already knows: keywords on it, and adjustments made
+/// in an earlier session. That is what puts the keyword panel and the restored
+/// banner into the golden, rather than only the widened column.
+CatalogEntry syntheticEntry() => CatalogEntry(
+      sha256: 'fa166f05a5b0f2669469a8aa382f93b0c28876324ebaebda091e732336a4d7d7',
+      displayName: '20250803_A0A8111.CR3',
+      sizeBytes: 22300000,
+      capturedAt: DateTime.utc(2025, 8, 2, 20, 6, 47),
+      camera: 'Canon EOS R7',
+      keywords: KeywordSet.parse('gull, north coast, backlit'),
+      firstSeen: DateTime.utc(2025, 8, 4, 9),
+      lastEdited: DateTime.utc(2025, 9, 2, 18, 30),
+    );
+
+const List<KeywordCount> syntheticKeywords = [
+  KeywordCount('north coast', 42),
+  KeywordCount('gull', 18),
+  KeywordCount('backlit', 7),
+];
 
 List<PhotoEntry> syntheticPhotos() => const [
       PhotoEntry('/p/20250803_A0A8111.CR3', '20250803_A0A8111.CR3'),
@@ -169,6 +191,9 @@ void main() {
       ),
       status: '10 RAW files',
       renderMillis: 64,
+      entry: syntheticEntry(),
+      knownKeywords: syntheticKeywords,
+      restoredFrom: DateTime.utc(2025, 9, 2, 18, 30),
     );
 
     await tester.pumpWidget(harness(state));

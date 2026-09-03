@@ -215,6 +215,49 @@ class Geometry {
     );
   }
 
+  // ── Serialisation ───────────────────────────────────────────────────────
+
+  Map<String, Object?> toJson() => {
+        'quarterTurns': quarterTurns,
+        'straightenDegrees': straightenDegrees,
+        'crop': [crop.left, crop.top, crop.right, crop.bottom],
+        'aspect': aspect.label,
+      };
+
+  /// Rebuild from a stored document. Every field is optional and falls back to
+  /// this class's own default, so a document written by an older build reads
+  /// as an older geometry rather than as a zeroed one.
+  factory Geometry.fromJson(Map<String, Object?> json) {
+    final crop = json['crop'];
+    return Geometry(
+      quarterTurns: ((json['quarterTurns'] as num?)?.toInt() ?? 0) % 4,
+      straightenDegrees:
+          (json['straightenDegrees'] as num?)?.toDouble() ?? 0.0,
+      crop: crop is List && crop.length == 4
+          ? CropRect(
+              (crop[0] as num).toDouble(),
+              (crop[1] as num).toDouble(),
+              (crop[2] as num).toDouble(),
+              (crop[3] as num).toDouble(),
+            )
+          : CropRect.full,
+      aspect: _aspectFromLabel(json['aspect'] as String?),
+    );
+  }
+
+  /// An aspect label is a string shown in the UI, and the list it comes from
+  /// will change. An unrecognised one falls back to Free rather than throwing:
+  /// a dropdown entry that was renamed must not be able to make a stored edit
+  /// unreadable. The crop rectangle itself is unaffected — the constraint is
+  /// only applied while dragging.
+  static AspectOption _aspectFromLabel(String? label) {
+    if (label == null) return AspectOption.free;
+    for (final option in AspectOption.all) {
+      if (option.label == label) return option;
+    }
+    return AspectOption.free;
+  }
+
   @override
   bool operator ==(Object other) =>
       other is Geometry &&

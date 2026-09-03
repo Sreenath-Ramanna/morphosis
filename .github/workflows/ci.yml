@@ -35,6 +35,12 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
 
+      # The catalogue is reached through CatalogStore and nothing else. The
+      # contract suite checks the interface behaves the same for every store;
+      # this checks no caller has reached past it, which no test would notice.
+      - name: SQLite stays behind the port
+        run: ./scripts/check-catalog-port.sh
+
   test:
     runs-on: ubuntu-latest
     steps:

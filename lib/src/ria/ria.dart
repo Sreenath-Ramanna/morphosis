@@ -86,6 +86,14 @@ class RawMetadata {
   final int width;
   final int height;
 
+  /// When the photograph was taken, or null when the file says nothing.
+  ///
+  /// `ria_metadata.timestamp` is Unix seconds and the C library zero-fills the
+  /// struct on a failed read, so 0 is converted to null here rather than to
+  /// 1970 — which is not a plausible capture date for a RAW file, and would
+  /// sort a whole folder of unknowns to the top of any date search.
+  final DateTime? capturedAt;
+
   const RawMetadata({
     required this.make,
     required this.model,
@@ -96,6 +104,7 @@ class RawMetadata {
     required this.focalLen,
     required this.width,
     required this.height,
+    this.capturedAt,
   });
 
   static const String unknown = '—';
@@ -211,6 +220,12 @@ class RawFile {
         focalLen: r.focalLen,
         width: r.width,
         height: r.height,
+        // The one boundary where a stored instant becomes a DateTime. UTC
+        // here, local only where it is drawn — PLAN.md section 12.
+        capturedAt: r.timestamp > 0
+            ? DateTime.fromMillisecondsSinceEpoch(r.timestamp * 1000,
+                isUtc: true)
+            : null,
       );
     } finally {
       calloc.free(m);

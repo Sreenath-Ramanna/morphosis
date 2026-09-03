@@ -7,8 +7,8 @@ photographer gave them, and what adjustments were applied.
 The store is SQLite, behind an interface that does not mention SQL, so it can
 be replaced later without touching anything that uses it.
 
-Nothing here is implemented yet. This document is the *what and why*; the
-phases at the end are the *when*.
+Implemented. Phases A–D are done; E remains unscheduled. This document is the
+*what and why*; the phases at the end record where each one landed.
 
 ---
 
@@ -412,43 +412,42 @@ a locking design nobody needs.
 
 ---
 
-## 11. Open decisions
+## 11. Decisions
 
-Worth settling before the schema sets, because changing them later means a
-migration.
+Settled before the schema set, because changing them later means a migration.
 
-**Should opening a frame create a row?** Recording every frame merely *looked
-at* makes the catalogue a record of the whole shoot, which is useful for
-"where have I seen this file" and expensive in rows. Recording only edited
-frames makes it a record of work done. **Recommendation: write on first edit
-or first keyword, and record locations for everything.** That keeps
-"where have I seen this" working without a row per glance.
+**Opening a frame writes a row.** Identity, display name, size, capture date and
+camera; `edit_json` stays NULL and `keywords` empty. `edit_json IS NOT NULL` is
+what "has been worked on" means, which keeps a frame merely looked at from
+claiming an edit nobody made. The alternative in an earlier draft — locations
+for everything, rows only for edited frames — cannot hold: `location.sha256`
+references `image(sha256)`, so a location cannot exist without its row. A row is
+about 200 bytes.
 
-**Should a catalogued edit be restored when the frame is reopened?** Storing
-adjustments and then ignoring them is strange, but frames currently open
-neutral and changing that silently would surprise. **Recommendation: restore
-it, and say so** — a line in the panel reading "edited 2 September, restored"
-with a one-click revert to neutral. Needs deciding before Phase D, because it
-changes what `_select` does.
+**A stored edit is restored when the frame is reopened, and the editor says
+so.** The Colors tab carries a line reading "Edited 4 September · restored" with
+a one-click Revert. Storing adjustments and then ignoring them is the strange
+option; restoring them silently would surprise, because frames used to open
+neutral. Revert clears the stored edit rather than storing neutral — the
+photographer never chose anything, as against choosing nothing.
 
-**What happens when the same digest is found at a second path?** Add a
-location; do not warn. Duplicates across a card and a NAS are normal. A
-*conflict* — same path, different digest — is worth surfacing, because it
-means the file was replaced.
+**A second path for the same digest adds a location, with no warning.** A card
+and a NAS holding one photograph is normal. The *conflict* — the same path now
+holding different content — moves the location to the new digest, because the
+file that was there has been replaced and the catalogue must stop claiming
+otherwise. `location` is keyed on `path` alone so the schema enforces this
+rather than every write having to.
 
-**Should the catalogue be exportable?** A sidecar JSON per image, or a single
-dump, would make the data portable and survive a corrupted database. Not
-required, cheap to add later, out of scope now.
-
----
+**The catalogue is not exportable.** A sidecar JSON per image would make the
+data portable and survive a corrupted database. Cheap to add later, out of scope
+now.
 
 ## 12. Risks
 
-**The install script deletes its own prefix.** Until the bundle is moved out
-of `~/.local/share/com.morphosis.morphosis/` (§3), writing the catalogue to
-the path this plan specifies would destroy it on every install. This is the
-one risk here that loses user data rather than merely annoying, and it fails
-silently.
+**The install script deletes its own prefix.** Addressed: the bundle moved to
+`~/.local/lib/morphosis/`, and `install.sh` now refuses to run if it finds a
+`catalog.db` in the prefix. The guard stays because the failure loses user data
+and is silent — nothing else in this document does both.
 
 **Pure-Dart hashing is fifteen times slower than the hardware can do it.**
 Tolerable at 0.3 s per frame in the background; not tolerable if a "hash this
@@ -471,15 +470,31 @@ the year, which is the hardest kind of wrong to notice.
 
 ## 13. Phases
 
-| | | effort |
+| | | |
 |---|---|---|
-| **A** | `CatalogStore`, `CatalogEntry`, `KeywordSet`, `MemoryCatalog`, and the tests they share | 1 |
-| **B** | Move the bundle to `~/.local/lib/morphosis/` in `install.sh` (§3), then `SqliteCatalogStore`, migrations, `CatalogService` isolate. Phase A's tests run against both | 1.5 |
-| **C** | `Edit.toJson`/`fromJson` with versioning; `timestamp` through to `RawMetadata`; streaming digest on an isolate | 1 |
-| **D** | The keyword panel, the wider column, autocomplete, and the write policy in §8 | 1.5 |
-| **E** | *Unscheduled.* A native SHA-256 in `raw_images_api`, only if measurement asks for it | 0.5 |
+| **A** | `CatalogStore`, `CatalogEntry`, `KeywordSet`, `MemoryCatalog`, and the tests they share | done |
+| **B** | The bundle moved to `~/.local/lib/morphosis/` in `install.sh` (§3), then `SqliteCatalogStore`, migrations, `CatalogService` isolate | done |
+| **C** | `Edit.toJson`/`fromJson` with versioning; the capture date through to `RawMetadata`; streaming digest on an isolate | done |
+| **D** | The keyword panel, the wider column, autocomplete, and the write policy in §8 | done |
+| **E** | *Unscheduled.* A native SHA-256 in `raw_images_api`, only if measurement asks for it | — |
 
-*(Sittings, not days.)*
+Phase A's tests became `test/catalog/catalog_contract.dart`, and they run against
+all three implementations: `MemoryCatalog`, `SqliteCatalogStore`, and
+`CatalogService` down an isolate port. Not one assertion had to be relaxed for
+any of them, which is the evidence that the interface is not SQLite-shaped.
+
+Three things came out of building it that the design above did not anticipate:
+
+- **`libsqlite3.so` is absent on a machine with only the runtime package** —
+  there is just `libsqlite3.so.0`. `package:sqlite3` opens the former by
+  default, so `sqlite_catalog.dart` carries a fallback chain. Choosing the
+  system library over a bundled one (§2) is what costs this.
+- **`sqlite3` is pinned to `^2.4.0`.** 3.x pulls twelve packages and a C
+  toolchain to compile SQLite from source, which §2's choice makes dead weight.
+- **The catalogue opens while the first frame is already decoding.** The hash
+  starts immediately and meets the catalogue when both are ready; gating the
+  hash on the database instead would leave the frame named on the command line
+  uncatalogued for the whole session.
 
 A before B is not negotiable: writing the in-memory implementation first is
 what stops the interface being shaped by SQLite. If `MemoryCatalog` is awkward

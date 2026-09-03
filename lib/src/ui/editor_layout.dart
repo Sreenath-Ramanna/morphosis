@@ -14,6 +14,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../catalog/catalog.dart';
 import '../model/edit.dart';
 import '../model/geometry.dart';
 import '../pipeline/processor.dart';
@@ -22,6 +23,7 @@ import 'canvas_zoom.dart';
 import 'controls_panel.dart';
 import 'crop_overlay.dart';
 import 'crop_panel.dart';
+import 'keyword_panel.dart';
 import 'photo_list.dart';
 import 'right_panel.dart';
 import 'theme.dart';
@@ -50,6 +52,18 @@ class EditorViewState {
   final String? error;
   final int renderMillis;
 
+  /// What the catalogue holds for the frame on screen. Null when there is no
+  /// frame, or no catalogue — the editor works without one.
+  final CatalogEntry? entry;
+
+  /// Every keyword used so far, for autocomplete.
+  final List<KeywordCount> knownKeywords;
+
+  /// Set when the adjustments on screen were restored from the catalogue
+  /// rather than made in this session. Drives the banner, and is cleared by
+  /// the first slider move.
+  final DateTime? restoredFrom;
+
   const EditorViewState({
     this.folder,
     this.photos = const [],
@@ -66,6 +80,9 @@ class EditorViewState {
     this.status,
     this.error,
     this.renderMillis = 0,
+    this.entry,
+    this.knownKeywords = const [],
+    this.restoredFrom,
   });
 }
 
@@ -118,6 +135,12 @@ class EditorLayout extends StatelessWidget {
   final VoidCallback? onNextImage;
 
   final ValueChanged<EditorTab>? onTabChanged;
+
+  /// Null leaves the keyword control disabled — no frame, or no catalogue.
+  final ValueChanged<KeywordSet>? onKeywordsChanged;
+
+  /// Discard the restored adjustments and go back to neutral.
+  final VoidCallback? onRevertEdit;
   final ValueChanged<Geometry>? onGeometryChanged;
 
   /// The canvas transform, shared so the keyboard and the mouse drive the same
@@ -135,6 +158,8 @@ class EditorLayout extends StatelessWidget {
     this.onPreviousImage,
     this.onNextImage,
     this.onTabChanged,
+    this.onKeywordsChanged,
+    this.onRevertEdit,
     this.onGeometryChanged,
     this.zoom,
   });
@@ -177,14 +202,36 @@ class EditorLayout extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 SizedBox(
-                  width: 210,
+                  // Widened from 210. That was chosen for a filename and a
+                  // thumbnail; a keyword field in it wraps after one short
+                  // word. PLAN.md section 9.
+                  width: 260,
                   child: ColoredBox(
                     color: Chrome.panel,
-                    child: PhotoList(
-                      photos: state.photos,
-                      selected: state.selected,
-                      thumbnails: state.thumbnails,
-                      onSelect: onSelect,
+                    child: Column(
+                      children: [
+                        Expanded(
+                          child: PhotoList(
+                            photos: state.photos,
+                            selected: state.selected,
+                            thumbnails: state.thumbnails,
+                            onSelect: onSelect,
+                          ),
+                        ),
+                        const Divider(height: 1),
+                        SizedBox(
+                          // About a third of a typical window, and never less
+                          // than the chips and the field need.
+                          height: 210,
+                          child: KeywordPanel(
+                            keywords: state.entry?.keywords ??
+                                KeywordSet.empty,
+                            known: state.knownKeywords,
+                            onChanged:
+                                state.entry == null ? null : onKeywordsChanged,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
@@ -226,12 +273,23 @@ class EditorLayout extends StatelessWidget {
   Widget _tabBody() {
     switch (state.tab) {
       case EditorTab.colour:
-        return ControlsPanel(
+        final controls = ControlsPanel(
           frame: state.frame,
           edit: state.edit,
           histogram: state.histogram,
           softLimitFactor: state.softLimitFactor,
           onChanged: onEditChanged,
+        );
+        final restored = state.restoredFrom;
+        if (restored == null) return controls;
+        // Storing adjustments and then applying them silently would surprise:
+        // frames used to open neutral. So it says what it did, and offers the
+        // one click back. PLAN.md section 11.
+        return Column(
+          children: [
+            RestoredBanner(when: restored, onRevert: onRevertEdit),
+            Expanded(child: controls),
+          ],
         );
       case EditorTab.crop:
         return CropPanel(
@@ -243,6 +301,53 @@ class EditorLayout extends StatelessWidget {
         return const MasksPanel();
     }
   }
+}
+
+/// "edited 2 September · revert" — what the editor says when it has put back
+/// adjustments the photographer made in an earlier session.
+class RestoredBanner extends StatelessWidget {
+  final DateTime when;
+  final VoidCallback? onRevert;
+
+  const RestoredBanner({super.key, required this.when, this.onRevert});
+
+  static const List<String> _months = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+  ];
+
+  /// The catalogue holds UTC; this is the one place it becomes local.
+  /// PLAN.md section 12: converting in more than one place produces dates that
+  /// are right for most of the year.
+  static String describe(DateTime utc) {
+    final local = utc.toLocal();
+    return '${local.day} ${_months[local.month - 1]}';
+  }
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: double.infinity,
+        padding: const EdgeInsets.fromLTRB(14, 8, 8, 8),
+        color: Chrome.panelRaised,
+        child: Row(
+          children: [
+            Expanded(
+              child: Text('Edited ${describe(when)} · restored',
+                  style: Chrome.label),
+            ),
+            TextButton(
+              onPressed: onRevert,
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                minimumSize: const Size(0, 28),
+                foregroundColor: Chrome.accent,
+                textStyle: const TextStyle(fontSize: 11.5),
+              ),
+              child: const Text('Revert'),
+            ),
+          ],
+        ),
+      );
 }
 
 /// Shown when the decoding library could not be loaded at all, which is a

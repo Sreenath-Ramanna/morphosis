@@ -52,6 +52,35 @@ to part of the frame — a sky, a face, a shadow — and it says so rather than
 being hidden, since a tab strip that grows an entry later moves the others
 under the cursor.
 
+## The catalogue
+
+Morphosis remembers the frames it has worked on: what they were called, when
+they were taken, what keywords you gave them, and what adjustments you made.
+The keyword editor is the bottom of the left column.
+
+**A photograph is identified by its content, not by its path.** The key is a
+SHA-256 digest of the file, so keywords and adjustments follow a frame that is
+copied to a NAS, moved, renamed or restored from a backup. They do not follow a
+conversion to DNG, or a file another program has written XMP into — those are
+different bytes, and the digest is honest about that rather than guessing.
+
+Hashing costs about a third of a second for a 30 MB frame, against a second and
+a half to decode it, and the two run together. A folder is never hashed on
+open: listing three hundred frames would be ninety seconds of it. Files are
+looked up by path, size and modification time, and only hashed when actually
+opened.
+
+Reopening a frame puts its adjustments back and says so, with one click to
+revert. Adjustments are written two seconds after you stop moving a slider —
+once per drag, not once per frame of it — and at once when you type a keyword,
+export, or leave the frame.
+
+The catalogue lives at
+`~/.local/share/com.morphosis.morphosis/catalog.db`. It is SQLite behind an
+interface that does not mention SQL, so it can be replaced without touching
+anything that uses it. Deleting the file loses the keywords and the stored
+edits; it never touches a photograph. **No RAW file is ever written to.**
+
 ### Where geometry happens
 
 Rotation and crop are applied to the **scene-referred buffer, before the tone
@@ -114,11 +143,21 @@ scripts/install.sh --no-build   # install what is already built
 scripts/install.sh --uninstall
 ```
 
-Everything lands under `~/.local/share`; no root. The bundle is **copied** to
-`~/.local/share/com.morphosis.morphosis/` rather than linked, because a
-`.desktop` Exec records an absolute path and pointing it into `build/` means a
-`flutter clean` silently breaks the menu entry. A `morphosis` symlink goes in
-`~/.local/bin`.
+No root is needed. The bundle is **copied** to `~/.local/lib/morphosis/`
+rather than linked, because a `.desktop` Exec records an absolute path and
+pointing it into `build/` means a `flutter clean` silently breaks the menu
+entry. A `morphosis` symlink goes in `~/.local/bin`.
+
+| | |
+|---|---|
+| `~/.local/lib/morphosis/` | the bundle — deleted and rewritten on every install |
+| `~/.local/share/com.morphosis.morphosis/` | the catalogue — user data, never installed over |
+| `~/.local/bin/morphosis` | symlink onto the bundle |
+
+The two directories are deliberately apart. Installing begins by deleting the
+bundle prefix, so sharing one directory with the catalogue would discard every
+keyword and every stored edit on each install, silently. `install.sh` refuses
+to run if it finds a `catalog.db` in the prefix.
 
 Installing is what makes the icon appear under Wayland at all. A compositor
 ignores the icon a process sets on its own window and instead matches the
@@ -396,7 +435,9 @@ contains, and is governed by the terms of:
 | [LibRaw](https://www.libraw.org/) | LGPL-2.1-only **or** CDDL-1.0, with parts BSD-3-Clause |
 | [raw_images_api](https://github.com/Sreenath-Ramanna/raw_images_api) | MIT |
 | Flutter, `package:ffi`, `package:path` | BSD-3-Clause |
-| `package:image`, `package:file_picker` | MIT |
+| `package:image`, `package:file_picker`, `package:sqlite3` | MIT |
+| `package:crypto` | BSD-3-Clause |
+| SQLite | public domain |
 
 LibRaw is the one with conditions attached. It is **dynamically linked** — the
 bundle loads `lib/libraw_images_api.so`, which in turn resolves `libraw_r.so`
