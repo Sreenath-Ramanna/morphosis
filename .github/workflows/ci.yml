@@ -26,7 +26,7 @@ jobs:
   analyze:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -38,7 +38,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -61,7 +61,7 @@ jobs:
     #   flutter test --update-goldens test/layout_golden_test.dart
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -71,7 +71,7 @@ jobs:
       - run: flutter test --tags golden
       - name: Upload the failure images
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: golden-failures
           path: test/failures/
@@ -81,10 +81,10 @@ jobs:
     name: FFI stamp
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check out raw_images_api
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Sreenath-Ramanna/raw_images_api
           ref: ${{ env.RIA_REF }}
@@ -102,10 +102,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check out raw_images_api
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: Sreenath-Ramanna/raw_images_api
           ref: ${{ env.RIA_REF }}
@@ -164,7 +164,7 @@ jobs:
           desktop-file-validate /tmp/check.desktop
 
       - name: Upload the bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: morphosis-linux-x64
           path: build/linux/x64/release/bundle/
