@@ -115,6 +115,7 @@ void catalogContract(String name, MakeFixture makeFixture) {
         brightnessEv: 0.3,
         contrastEv: 0.7,
         sharpness: 0.6,
+        saturation: -22.5,
         highlightRolloff: true,
         geometry: Geometry(
           quarterTurns: 1,

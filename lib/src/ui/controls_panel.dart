@@ -1,6 +1,6 @@
 // lib/src/ui/controls_panel.dart
 //
-// The control stack: which image, what it contains, and the seven adjustments.
+// The control stack: which image, what it contains, and the adjustments.
 //
 // The order is the order the pipeline applies them in, top to bottom — white
 // balance, then the scene-referred tone controls, then the display-referred
@@ -168,6 +168,26 @@ class ControlsPanel extends StatelessWidget {
           ],
         ),
 
+        // ── Colour ───────────────────────────────────────────────────────
+        PanelSection(
+          title: 'Colour',
+          children: [
+            AdjustSlider(
+              label: 'Saturation',
+              value: edit.saturation,
+              min: -saturationRange,
+              max: saturationRange,
+              format: _saturation,
+              onChanged: (v) => onChanged(edit.copyWith(saturation: v)),
+              note: 'Contrast acts on luminance only, so hue never moves — '
+                  'and the colour it leaves behind can read flat. This is the '
+                  'remedy: every channel\'s distance from the pixel\'s own '
+                  'luma, scaled. It runs after the display transform, so it '
+                  'is independent of the highlight rolloff.',
+            ),
+          ],
+        ),
+
         // ── Detail ───────────────────────────────────────────────────────
         PanelSection(
           title: 'Detail',
@@ -214,6 +234,13 @@ class ControlsPanel extends StatelessWidget {
   static String _ev(double v) {
     if (v == 0) return '0.00 EV';
     return '${v > 0 ? '+' : '−'}${v.abs().toStringAsFixed(2)} EV';
+  }
+
+  /// A position on a scale, not a quantity: no unit, and no decimals, which
+  /// over a hundred-unit range would be three digits of noise.
+  static String _saturation(double v) {
+    if (v == 0) return '0';
+    return '${v > 0 ? '+' : '−'}${v.abs().round()}';
   }
 
   static String? _contrastNote(double c) {

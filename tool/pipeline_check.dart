@@ -113,6 +113,7 @@ Future<int> _check(String path, String outDir) async {
     brightnessEv: 0.3,
     contrastEv: 0.7,
     sharpness: 0.6,
+    saturation: 18.0,
     highlightRolloff: true,
   );
 
@@ -136,7 +137,7 @@ Future<int> _check(String path, String outDir) async {
 
   sw.reset();
   renderRgb8(preview.data, preview.width, preview.height, matrix, gain, disp,
-      buf.pixels);
+      buf.pixels, saturation: edit.saturation);
   final renderMs = sw.elapsedMicroseconds / 1000;
 
   sw.reset();
@@ -258,6 +259,7 @@ Future<int> _checkWorker(List<String> paths) async {
         brightnessEv: 0.5,
         contrastEv: 1.0,
         sharpness: 0.8,
+        saturation: -22.0,
         highlightRolloff: true,
       ));
       check(!_same(neutral.rgba, edited.rgba),

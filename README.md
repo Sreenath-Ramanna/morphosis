@@ -4,8 +4,8 @@ A non-destructive camera RAW editor for Linux desktop, built on
 [raw_images_api](https://github.com/Sreenath-Ramanna/raw_images_api).
 
 Browse to a folder, pick a frame, and adjust colour temperature, four
-exposure zones, brightness, contrast and sharpness with the canvas following
-each slider. Export to 16-bit TIFF or JPEG.
+exposure zones, brightness, contrast, saturation and sharpness with the canvas
+following each slider. Export to 16-bit TIFF or JPEG.
 
 **The RAW file is never written to.** It is opened read-only, the adjustments
 live in memory, and an export decodes the file again and writes a new one at a
@@ -40,7 +40,7 @@ most of the height. See `apply_compact_titlebar_css` in
 ## The three tabs
 
 **Colour** holds every tonal control: white balance, the four exposure zones,
-brightness, contrast and sharpness, with the histogram above them.
+brightness, contrast, saturation and sharpness, with the histogram above them.
 
 **Crop** holds rotation in quarter turns, a straighten slider, and the aspect
 constraints; the rectangle itself is dragged on the canvas, where pan and zoom
@@ -196,6 +196,7 @@ Measured on a 24 MP NEF and a 33 MP CR3, release build:
 | open + read metadata and colour data | 1–2 ms |
 | scene-linear decode to a 1600 px preview | 1.9 s |
 | fused render pass (1.7 MP) | 60–70 ms |
+| the same pass with saturation off zero | 100–110 ms |
 | unsharp mask | 60 ms |
 | histogram | 3–4 ms |
 | full-resolution TIFF export | 5–7 s |
@@ -206,7 +207,7 @@ Measured on a 24 MP NEF and a 33 MP CR3, release build:
 ## Design
 
 [raw_images_api's approach.md](https://github.com/Sreenath-Ramanna/raw_images_api/blob/master/approach.md) is the design
-this implements. The short version, and the three places this app deviates
+this implements. The short version, and the four places this app deviates
 from it — each deviation is argued at the point it happens in the source.
 
 ### Two domains, and one fused pass between them
@@ -236,6 +237,7 @@ Everything specified in EV happens on that linear data:
      ▼
   ┌──────────────────────────────────────────────┐
   │  DISPLAY-REFERRED   8 or 16-bit encoded      │
+  │    saturation                                │  render.dart
   │    unsharp mask            ria_unsharp_mask  │
   │    256-bin histogram   ria_compute_histogram │
   └──────────────────────────────────────────────┘
@@ -260,6 +262,7 @@ the test approach.md §11 specifies for catching it.
 | Black / Shadow / Highlight / White | scene | zone EV, applied as a luminance-preserving gain |
 | Brightness | display | the transform's grey point — a midtone placement |
 | Contrast | scene | slope `2^(c/3)` about the midtone, on luminance only |
+| Saturation | display | distance from luma × (1 + s/50), limited per pixel so no channel leaves range |
 | Sharpness | display | `ria_unsharp_mask`, applied last |
 
 Brightness is the grey point rather than a second exposure control, following
@@ -269,8 +272,9 @@ anchored — is exactly what a display grey point does.
 
 Contrast acts on luminance, not per channel, so hue never moves. That is the
 predictable choice and it costs some apparent colourfulness; the remedy, if
-you want it, is saturation, which is a separate control this app does not yet
-expose.
+you want it, is Saturation, in the Colour section — a separate control, on
+purpose, so that restoring colourfulness is something you ask for rather than
+something the contrast slider does behind you.
 
 ### Deviation 1 — the zone controls are anchored to display white
 
@@ -323,6 +327,34 @@ composites the canvas as sRGB and every viewer that opens an exported file
 assumes sRGB, so encoding anything else leaves the preview and the export each
 slightly wrong in the same direction with nothing to say so. The two curves
 differ only in the toe.
+
+### Deviation 4 — saturation is gamut-limited, not clamped
+
+The operation is the library's: `c' = y + (c − y)·f`, with `y` the Rec.709
+luma of the encoded values and `f = 1 + s/50`, so the slider value divided by
+50 is numerically `ria_adjustments.saturation` and the two implementations
+agree by construction on the arithmetic.
+
+They part company at the gamut edge. `saturate()`
+(`raw_images_api/src/ria_adjust.c:134-154`) clamps each channel independently
+after scaling. Clamping one channel and not the others changes the ratios
+between them, which is what hue *is* — so a blue sky boosted past the edge
+comes back purple, and the failure grows with the setting exactly where the
+photographer is looking.
+
+Morphosis reduces `f` per pixel instead, to the largest value that keeps all
+three channels inside the output range, and applies that one number to all
+three distances. A pixel already at the edge takes as much of the boost as it
+can and no more; its hue direction never moves. The two agree exactly on every
+in-gamut pixel and differ only where the C version would have clipped.
+
+The price is that a saturated pixel stops responding to the slider before an
+unsaturated one does. That is the honest behaviour: the display has nowhere to
+put the colour being asked for, and rotating the hue to fake it is not an
+answer. `test/render_test.dart`'s `group('saturation')` holds this as
+properties — luma preserved at every setting, the channel order never
+reordered, and the hue direction held on both an in-gamut pixel and one at the
+edge.
 
 ### Colour temperature
 

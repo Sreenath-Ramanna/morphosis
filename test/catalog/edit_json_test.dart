@@ -19,6 +19,7 @@ const populated = Edit(
   brightnessEv: 0.3,
   contrastEv: 0.7,
   sharpness: 0.6,
+  saturation: 18.5,
   highlightRolloff: true,
   geometry: Geometry(
     quarterTurns: 1,
@@ -104,6 +105,26 @@ void main() {
 
     test('a missing zone is zero EV, which is also its default', () {
       expect(Edit.fromJson(without(populated, 'shadowEv')).shadowEv, 0.0);
+    });
+
+    test('a missing saturation reads as 0', () {
+      expect(Edit.fromJson(without(populated, 'saturation')).saturation, 0.0);
+    });
+  });
+
+  group('saturation is part of the edit\'s identity', () {
+    // Without this field in `operator ==`, catalog_writer decides a slider
+    // move is not worth a write and the editor's coalescing loop drops the
+    // last change of a drag — both silently, and with no other test failing.
+    test('an edit differing only in saturation is a different edit', () {
+      expect(Edit.neutral.copyWith(saturation: 1), isNot(Edit.neutral));
+    });
+
+    test('isNeutral is false the moment saturation moves', () {
+      expect(Edit.neutral.copyWith(saturation: 1).isNeutral, isFalse);
+      expect(Edit.neutral.copyWith(saturation: -50).isNeutral, isFalse);
+      expect(Edit.neutral.copyWith(saturation: 50).isNeutral, isFalse);
+      expect(Edit.neutral.copyWith(saturation: 0).isNeutral, isTrue);
     });
   });
 

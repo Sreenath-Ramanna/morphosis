@@ -14,6 +14,9 @@ import 'geometry.dart';
 /// control.
 const double evRange = 3.0;
 
+/// The full −50 … +50 range of the saturation control.
+const double saturationRange = 50.0;
+
 class Edit {
   /// Target colour temperature in Kelvin. Null means "as shot" — held as null
   /// rather than as a number so that reopening the same frame reproduces
@@ -39,6 +42,13 @@ class Edit {
   /// Unsharp mask amount, 0 … 1.5. Display-referred, applied last.
   final double sharpness;
 
+  /// Saturation, −50 … +50. Display-referred: it scales each channel's
+  /// distance from the pixel's luma by `f = 1 + s / saturationRange`, so −50
+  /// is exactly greyscale and +50 doubles the distance. `s / saturationRange`
+  /// is numerically `ria_adjustments.saturation`, so the Dart loop and any
+  /// future native path agree by construction.
+  final double saturation;
+
   /// Roll the highlights off with the extended-Reinhard shoulder instead of
   /// clipping them. Off reproduces what a plain decode does.
   final bool highlightRolloff;
@@ -56,6 +66,7 @@ class Edit {
     this.brightnessEv = 0,
     this.contrastEv = 0,
     this.sharpness = 0,
+    this.saturation = 0,
     this.highlightRolloff = false,
     this.geometry = Geometry.identity,
   });
@@ -71,6 +82,7 @@ class Edit {
       brightnessEv == 0 &&
       contrastEv == 0 &&
       sharpness == 0 &&
+      saturation == 0 &&
       !highlightRolloff &&
       geometry.isIdentity;
 
@@ -84,6 +96,7 @@ class Edit {
     double? brightnessEv,
     double? contrastEv,
     double? sharpness,
+    double? saturation,
     bool? highlightRolloff,
     Geometry? geometry,
   }) =>
@@ -97,6 +110,7 @@ class Edit {
         brightnessEv: brightnessEv ?? this.brightnessEv,
         contrastEv: contrastEv ?? this.contrastEv,
         sharpness: sharpness ?? this.sharpness,
+        saturation: saturation ?? this.saturation,
         highlightRolloff: highlightRolloff ?? this.highlightRolloff,
         geometry: geometry ?? this.geometry,
       );
@@ -117,13 +131,14 @@ class Edit {
       other.brightnessEv == brightnessEv &&
       other.contrastEv == contrastEv &&
       other.sharpness == sharpness &&
+      other.saturation == saturation &&
       other.highlightRolloff == highlightRolloff &&
       other.geometry == geometry;
 
   @override
   int get hashCode => Object.hash(temperatureK, blackEv, shadowEv, highlightEv,
-      whiteEv, brightnessEv, contrastEv, sharpness, highlightRolloff,
-      geometry);
+      whiteEv, brightnessEv, contrastEv, sharpness, saturation,
+      highlightRolloff, geometry);
 
   /// True when only the tonal controls differ, so a re-render can reuse the
   /// cached geometry-applied buffer instead of resampling again.
@@ -163,6 +178,7 @@ class Edit {
         'brightnessEv': brightnessEv,
         'contrastEv': contrastEv,
         'sharpness': sharpness,
+        'saturation': saturation,
         'highlightRolloff': highlightRolloff,
         'geometry': geometry.toJson(),
       };
@@ -199,6 +215,7 @@ class Edit {
       brightnessEv: d('brightnessEv', defaults.brightnessEv),
       contrastEv: d('contrastEv', defaults.contrastEv),
       sharpness: d('sharpness', defaults.sharpness),
+      saturation: d('saturation', defaults.saturation),
       highlightRolloff:
           json['highlightRolloff'] as bool? ?? defaults.highlightRolloff,
       geometry: geometry is Map<String, Object?>

@@ -187,6 +187,7 @@ void main() {
         brightnessEv: 0.3,
         contrastEv: 0.7,
         sharpness: 0.6,
+        saturation: 18,
         highlightRolloff: true,
       ),
       status: '10 RAW files',
@@ -256,6 +257,7 @@ void main() {
       'White level',
       'Brightness',
       'Contrast',
+      'Saturation',
       'Sharpness',
     ]) {
       await tester.scrollUntilVisible(find.text(label), 120,
@@ -264,8 +266,43 @@ void main() {
     }
     expect(find.text('Export'), findsOneWidget);
 
-    // As-shot temperature is shown, and the slider starts there.
+    // As-shot temperature is shown, and the slider starts there. Back to the
+    // top of the panel to see it: the stack is taller than the viewport, so
+    // reaching the last control scrolls the first one off.
+    await tester.scrollUntilVisible(find.text('Colour temperature'), -120,
+        scrollable: panel);
     expect(find.text('5787 K'), findsOneWidget);
+  });
+
+  // The formatter is the one part of the control no golden can assert and no
+  // render test reaches: an integer, a sign, and U+2212 rather than a hyphen.
+  testWidgets('the saturation value reads as a signed integer', (tester) async {
+    tester.view.physicalSize = _size;
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    Future<void> pumpAt(double saturation) async {
+      await tester.pumpWidget(harness(EditorViewState(
+        frame: syntheticFrameInfo(),
+        histogram: syntheticHistogram(),
+        photos: syntheticPhotos(),
+        thumbnails: {for (final p in syntheticPhotos()) p.path: null},
+        selected: 0,
+        edit: Edit(saturation: saturation),
+      )));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(find.text('Saturation'), 120,
+          scrollable: find.byType(Scrollable).last);
+    }
+
+    await pumpAt(18);
+    expect(find.text('+18'), findsOneWidget);
+
+    await pumpAt(-7.4);
+    expect(find.text('−7'), findsOneWidget, reason: 'U+2212, not a hyphen');
+
+    await pumpAt(0);
+    expect(find.text('0'), findsOneWidget);
   });
 
   testWidgets('a temperature the camera cannot express disables the control',

@@ -27,7 +27,9 @@ import 'tone.dart';
 /// A 33 MP frame is 100 million samples per pass; at this size it is under
 /// two, which is what keeps a slider drag interactive — measured on the
 /// release build, roughly 45 ms for the fused pass and another 70 ms when
-/// sharpening is on. The full resolution is decoded again at export time, so
+/// sharpening is on. Saturation off zero roughly doubles the pass, to about
+/// 100 ms: it is per-pixel three-channel arithmetic that cannot be folded
+/// into a table, so it costs what it costs, and it costs nothing at zero. The full resolution is decoded again at export time, so
 /// nothing is lost: approach.md's "adapt for the preview, re-decode for the
 /// export", applied to the whole pipeline rather than only to white balance.
 const int previewMaxEdge = 1600;
@@ -336,7 +338,7 @@ class _Worker {
     }
 
     renderRgb8(scene.data, scene.width, scene.height, matrix, gainLut, disp,
-        buf.pixels);
+        buf.pixels, saturation: edit.saturation);
 
     if (edit.sharpness > 0) {
       buf.unsharpMask(_previewSigma, edit.sharpness, _sharpenThreshold);
@@ -472,8 +474,8 @@ Future<String> runExport(ExportRequest req) async {
     final disp = tone.buildDisplayLut(
         outMax: 65535, entries: DisplayLut.exportEntries);
     final out = Uint16List(scene.width * scene.height * 3);
-    renderRgb16(
-        scene.data, scene.width, scene.height, matrix, gainLut, disp, out);
+    renderRgb16(scene.data, scene.width, scene.height, matrix, gainLut, disp,
+        out, saturation: req.edit.saturation);
     // Sharpening runs through the C path, which needs the pixels in native
     // memory; 16-bit RGB has no RGBA wrapper here, so a TIFF is sharpened by
     // wrapping the same buffer as RGB16.
@@ -488,7 +490,7 @@ Future<String> runExport(ExportRequest req) async {
     final buf = DisplayBuffer.allocate(scene.width, scene.height);
     try {
       renderRgb8(scene.data, scene.width, scene.height, matrix, gainLut, disp,
-          buf.pixels);
+          buf.pixels, saturation: req.edit.saturation);
       if (req.edit.sharpness > 0) {
         buf.unsharpMask(sigma, req.edit.sharpness, _sharpenThreshold);
       }

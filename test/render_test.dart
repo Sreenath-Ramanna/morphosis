@@ -6,6 +6,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:morphosis/src/model/edit.dart' show saturationRange;
 import 'package:morphosis/src/pipeline/export.dart';
 import 'package:morphosis/src/pipeline/render.dart';
 import 'package:morphosis/src/pipeline/tone.dart';
@@ -17,6 +18,34 @@ Uint16List rampFrame(int n) {
     final t = i / (n - 1);
     final v = (65535 * math.pow(2.0, -14 * (1 - t))).round().clamp(0, 65535);
     out[i * 3] = out[i * 3 + 1] = out[i * 3 + 2] = v;
+  }
+  return out;
+}
+
+/// Saturated colour patches in scene-linear 16-bit RGB, one pixel each.
+///
+/// A grey ramp cannot exercise a control whose whole job is chroma. These sit
+/// below sensor saturation and span the hue circle, so no property below can
+/// be satisfied by one accidental channel order; the neutral and the near
+/// black are there because a control that only works on vivid colour is a
+/// control that has a special case nobody wrote down.
+const _patches = <List<int>>[
+  [30000, 9000, 4500], // warm
+  [5000, 22000, 8000], // green
+  [6000, 9000, 33000], // blue
+  [26000, 26000, 6000], // yellow
+  [22000, 6000, 22000], // magenta
+  [5000, 24000, 26000], // cyan
+  [15000, 15000, 15000], // neutral: nothing to saturate
+  [900, 800, 1000], // near black
+];
+
+Uint16List _colourFrame() {
+  final out = Uint16List(_patches.length * 3);
+  for (var i = 0; i < _patches.length; i++) {
+    out[i * 3] = _patches[i][0];
+    out[i * 3 + 1] = _patches[i][1];
+    out[i * 3 + 2] = _patches[i][2];
   }
   return out;
 }
@@ -144,6 +173,219 @@ void main() {
     });
   });
 
+  group('saturation', () {
+    final src = _colourFrame();
+    final n = _patches.length;
+    final base = _render8(src, n, 0);
+
+    test('zero is byte-exact against a render that never mentions saturation',
+        () {
+      final t = Tone(greyPoint: _greyPoint);
+      final lut = t.buildGainLut();
+      final disp =
+          t.buildDisplayLut(outMax: 255, entries: DisplayLut.previewEntries);
+      // With and without a white balance, because the two arms of the matrix
+      // branch reach the write through different locals.
+      final matrix = Float64List.fromList(
+          [1.04, 0.02, -0.01, 0.01, 0.99, 0.02, -0.02, 0.03, 1.08]);
+
+      for (final m in <Float64List?>[null, matrix]) {
+        final withoutIt = Uint8List(n * 3);
+        renderRgb8(src, n, 1, m, lut, disp, withoutIt);
+        final withZero = Uint8List(n * 3);
+        renderRgb8(src, n, 1, m, lut, disp, withZero, saturation: 0);
+        // `y + (c − y) × 1.0` is not bit-exactly `c`, so this is the test that
+        // fails if the zero branch is not hoisted out of the loop.
+        expect(withZero, withoutIt,
+            reason: 'saturation 0 must be the same lookups and the same '
+                'writes as a render that has never heard of it');
+      }
+    });
+
+    test('−50 lands every pixel on its own luma', () {
+      final grey = _render8(src, n, -saturationRange);
+      for (var i = 0; i < n; i++) {
+        expect(grey[i * 3], grey[i * 3 + 1], reason: 'patch $i');
+        expect(grey[i * 3 + 1], grey[i * 3 + 2], reason: 'patch $i');
+        // One code of tolerance is the quantisation, not slack: the common
+        // value is the rounded Rec.709 luma of the unsaturated render.
+        expect(grey[i * 3].toDouble(), closeTo(_lumaAt(base, i), 1.0),
+            reason: 'patch $i');
+      }
+    });
+
+    test('a boost widens the channel spread and never narrows it', () {
+      var strict = 0;
+      for (final setting in [5.0, 10.0, 25.0, 50.0]) {
+        final out = _render8(src, n, setting);
+        for (var i = 0; i < n; i++) {
+          expect(_spread(out, i), greaterThanOrEqualTo(_spread(base, i)),
+              reason: 'saturation $setting, patch $i');
+          if (_wellInside(base, i)) {
+            expect(_spread(out, i), greaterThan(_spread(base, i)),
+                reason: 'saturation $setting, patch $i');
+            strict++;
+          }
+        }
+      }
+      expect(strict, greaterThan(8),
+          reason: 'the strict half of the property must not be vacuous');
+    });
+
+    test('a boost holds the hue direction on an in-gamut pixel', () {
+      // Hue in this operation *is* the direction of (r − y, g − y, b − y). A
+      // per-channel clamp is exactly what rotates it, so this is the property
+      // that separates the gamut limiter from the rejected implementation.
+      var checked = 0;
+      for (final setting in [10.0, 25.0, 50.0]) {
+        final out = _render8(src, n, setting);
+        for (var i = 0; i < n; i++) {
+          if (!_wellInside(base, i)) continue;
+          _expectSameDirection(base, out, i, 'saturation $setting, patch $i');
+          checked++;
+        }
+      }
+      expect(checked, greaterThan(6));
+    });
+
+    test('luma is preserved at every setting', () {
+      // The gamut-limited factor scales all three distances by one number, so
+      // the weighted sum of the distances stays zero. Hard clamping is what
+      // destroys this.
+      for (var setting = -saturationRange;
+          setting <= saturationRange;
+          setting += 5) {
+        final out = _render8(src, n, setting);
+        for (var i = 0; i < n; i++) {
+          expect(_lumaAt(out, i), closeTo(_lumaAt(base, i), 1.0),
+              reason: 'saturation $setting, patch $i');
+        }
+      }
+    });
+
+    test('boosting never reorders the channels, so nothing wrapped or clipped',
+        () {
+      // A Uint8List assignment of 256 wraps silently to 0, which turns the
+      // brightest channel into the darkest. A dense grid of sources, because
+      // the arithmetic edge is what is being hunted rather than any one hue.
+      const levels = [900, 5000, 15000, 34000, 65535];
+      final grid = <int>[];
+      for (final r in levels) {
+        for (final g in levels) {
+          for (final b in levels) {
+            grid.addAll([r, g, b]);
+          }
+        }
+      }
+      final dense = Uint16List.fromList(grid);
+      final count = levels.length * levels.length * levels.length;
+      final flat = _render8(dense, count, 0);
+      final boosted = _render8(dense, count, saturationRange);
+
+      for (var i = 0; i < count; i++) {
+        final f = [flat[i * 3], flat[i * 3 + 1], flat[i * 3 + 2]];
+        final o = [boosted[i * 3], boosted[i * 3 + 1], boosted[i * 3 + 2]];
+        final hi = f.indexOf(f.reduce(math.max));
+        final lo = f.indexOf(f.reduce(math.min));
+        expect(o[hi], o.reduce(math.max), reason: 'pixel $i: $f became $o');
+        expect(o[lo], o.reduce(math.min), reason: 'pixel $i: $f became $o');
+      }
+    });
+
+    test('a pixel already at the gamut edge keeps its hue and takes what boost '
+        'it can', () {
+      // Bright enough that the red channel renders at display white, so the
+      // limiter has nowhere left to move it.
+      final edge = Uint16List.fromList([65535, 26000, 9000]);
+      final flat = _render8(edge, 1, 0);
+      expect(flat[0], 255, reason: 'the patch must actually reach the edge');
+
+      final boosted = _render8(edge, 1, saturationRange);
+      expect(boosted[0], 255,
+          reason: 'the maximum channel stays at white — not wrapped to 0, and '
+              'not pulled back down');
+      _expectSameDirection(flat, boosted, 0, 'at the gamut edge');
+    });
+
+    test('the spread is monotone in the setting and no channel crosses its '
+        'luma', () {
+      // The operation is affine about the luma, so a larger setting can only
+      // move a channel further out along the same ray. That is composition
+      // stated in the form the public API can express.
+      final previous = List<int>.filled(n, -1);
+      for (var setting = -saturationRange;
+          setting <= saturationRange;
+          setting += 5) {
+        final out = _render8(src, n, setting);
+        for (var i = 0; i < n; i++) {
+          expect(_spread(out, i), greaterThanOrEqualTo(previous[i]),
+              reason: 'saturation $setting, patch $i');
+          previous[i] = _spread(out, i);
+
+          final y = _lumaAt(base, i);
+          for (var c = 0; c < 3; c++) {
+            final d = base[i * 3 + c] - y;
+            // Half a code is the rounding of the write; the sign itself never
+            // turns over.
+            if (d > 0) {
+              expect(out[i * 3 + c].toDouble(), greaterThanOrEqualTo(y - 0.5),
+                  reason: 'saturation $setting, patch $i, channel $c');
+            } else if (d < 0) {
+              expect(out[i * 3 + c].toDouble(), lessThanOrEqualTo(y + 0.5),
+                  reason: 'saturation $setting, patch $i, channel $c');
+            }
+          }
+        }
+      }
+    });
+
+    test('black stays black and white stays white', () {
+      // The Rec.709 weights are all positive and sum to one, so the luma can
+      // only reach an end of the range when all three channels are already
+      // there. Every distance is then zero and the factor has nothing to
+      // scale — which is why neither end needs a special case, and why the
+      // channel-on-its-own-luma branch has to be a skip rather than a bound
+      // computed from a zero denominator.
+      final ends = Uint16List.fromList([0, 0, 0, 65535, 65535, 65535]);
+      for (final setting in [-saturationRange, 25.0, saturationRange]) {
+        final out = _render8(ends, 2, setting);
+        expect(out.sublist(0, 3), [0, 0, 0], reason: 'saturation $setting');
+        expect(out.sublist(3, 6), [255, 255, 255],
+            reason: 'saturation $setting');
+      }
+    });
+
+    test('the export loop and the preview loop agree no less well with '
+        'saturation than without', () {
+      // The two loops read display tables of different widths, so exact
+      // equality is not available and is not the property. Staying within the
+      // factor is: the operation is affine about the luma, so it scales the
+      // half-code the two tables already disagree by rather than inventing a
+      // disagreement of its own. A fix applied to one loop and not the other
+      // shows up as a hundred codes, not as one.
+      double worstAt(double setting) {
+        final eight = _render8(src, n, setting);
+        final sixteen = _render16(src, n, setting);
+        var worst = 0.0;
+        for (var i = 0; i < n * 3; i++) {
+          final d = (eight[i] - sixteen[i] * 255.0 / 65535.0).abs();
+          if (d > worst) worst = d;
+        }
+        return worst;
+      }
+
+      final neutral = worstAt(0);
+      for (final setting in [saturationRange, -saturationRange]) {
+        final factor = 1 + setting / saturationRange;
+        // Plus one code for the rounding of the write, which the neutral pass
+        // does not do at all — it copies table entries.
+        expect(worstAt(setting), lessThanOrEqualTo(factor * neutral + 1),
+            reason: 'saturation $setting pulled the two loops apart by more '
+                'than the factor it applies');
+      }
+    });
+  });
+
   group('zone histogram', () {
     test('finds the percentile of a known ramp', () {
       const n = 4096;
@@ -248,6 +490,65 @@ void main() {
       expect(defaultJpegQuality, 95);
     });
   });
+}
+
+/// The tone every saturation property renders through. One grey point, so the
+/// only thing moving between two renders is the setting under test.
+const double _greyPoint = 0.18;
+
+Uint8List _render8(Uint16List src, int n, double saturation) {
+  final t = Tone(greyPoint: _greyPoint);
+  final dst = Uint8List(n * 3);
+  renderRgb8(src, n, 1, null, t.buildGainLut(),
+      t.buildDisplayLut(outMax: 255, entries: DisplayLut.previewEntries), dst,
+      saturation: saturation);
+  return dst;
+}
+
+Uint16List _render16(Uint16List src, int n, double saturation) {
+  final t = Tone(greyPoint: _greyPoint);
+  final dst = Uint16List(n * 3);
+  renderRgb16(src, n, 1, null, t.buildGainLut(),
+      t.buildDisplayLut(outMax: 65535, entries: DisplayLut.exportEntries), dst,
+      saturation: saturation);
+  return dst;
+}
+
+double _lumaAt(List<int> px, int i) =>
+    px[i * 3] * 0.2126 + px[i * 3 + 1] * 0.7152 + px[i * 3 + 2] * 0.0722;
+
+int _spread(List<int> px, int i) {
+  final r = px[i * 3], g = px[i * 3 + 1], b = px[i * 3 + 2];
+  return math.max(r, math.max(g, b)) - math.min(r, math.min(g, b));
+}
+
+/// A patch with room to move in both directions, so a boost is not silently
+/// tested against a pixel the limiter has already pinned.
+bool _wellInside(List<int> px, int i) {
+  final r = px[i * 3], g = px[i * 3 + 1], b = px[i * 3 + 2];
+  return math.min(r, math.min(g, b)) >= 20 &&
+      math.max(r, math.max(g, b)) <= 200 &&
+      _spread(px, i) >= 30;
+}
+
+/// The two pixels point the same way out of grey — the cross product of the
+/// normalised distance vectors is zero to within quantisation.
+void _expectSameDirection(List<int> a, List<int> b, int i, String reason) {
+  final ya = _lumaAt(a, i), yb = _lumaAt(b, i);
+  final u = [a[i * 3] - ya, a[i * 3 + 1] - ya, a[i * 3 + 2] - ya];
+  final v = [b[i * 3] - yb, b[i * 3 + 1] - yb, b[i * 3 + 2] - yb];
+  final nu = math.sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+  final nv = math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+  expect(nu, greaterThan(1e-6), reason: '$reason: the source has no chroma');
+  expect(nv, greaterThan(1e-6), reason: '$reason: the chroma disappeared');
+  final cross = [
+    (u[1] * v[2] - u[2] * v[1]) / (nu * nv),
+    (u[2] * v[0] - u[0] * v[2]) / (nu * nv),
+    (u[0] * v[1] - u[1] * v[0]) / (nu * nv),
+  ];
+  for (final c in cross) {
+    expect(c, closeTo(0, 0.03), reason: '$reason: hue rotated');
+  }
 }
 
 double _srgbDecode(double v) {
