@@ -179,9 +179,21 @@ class EditorLayout extends StatelessWidget {
           ZoomOutIntent:
               CallbackAction<ZoomOutIntent>(onInvoke: (_) => zoom?.zoomOut()),
         },
-        // Autofocus so the bindings answer on a freshly opened window, before
-        // anything has been clicked.
-        child: Focus(autofocus: true, child: _body()),
+        // A scope, not a bare Focus, and it must sit inside Shortcuts.
+        //
+        // Shortcuts resolves a key event by walking up the focus tree from
+        // whatever holds primary focus. The keyword field is the only thing
+        // here that can take focus — sliders are ExcludeFocus — and on desktop
+        // clicking outside a text field unfocuses it, handing primary focus to
+        // the nearest enclosing scope. If that scope were the route's, it
+        // would sit above this widget and every binding would go dead for the
+        // rest of the session: the photographer types a keyword, moves a
+        // slider, and the arrow keys and zoom silently stop.
+        //
+        // Owning the scope here means the focus lands back under Shortcuts
+        // instead. Autofocus so the bindings also answer on a freshly opened
+        // window, before anything has been clicked.
+        child: FocusScope(autofocus: true, child: _body()),
       ),
     );
   }

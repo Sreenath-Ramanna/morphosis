@@ -2,6 +2,7 @@
 //
 // The keyboard bindings, and the zoom arithmetic behind two of them.
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -201,6 +202,145 @@ void main() {
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
       await tester.pump();
       expect(fired, ['next'], reason: 'the slider took the key');
+    });
+
+    // The regression that shipped with the keyword panel.
+    //
+    // Shortcuts resolves a key event by walking UP the focus tree from the
+    // primary focus node. The keyword field is the first widget in this app
+    // that can take focus — sliders are ExcludeFocus — and on desktop a tap
+    // outside a text field unfocuses it. Unfocusing hands primary focus to the
+    // nearest enclosing scope, and if that scope is the route's, it sits ABOVE
+    // the Shortcuts widget: every editor binding goes dead for the rest of the
+    // session, with nothing on screen to say why.
+    //
+    // The platform override is load-bearing. Tests default to android, where
+    // a tap outside does not unfocus, so without it this passes while the real
+    // application is broken.
+    group('after the keyword field has had focus', () {
+      // Set and cleared inside each body, not in setUp/tearDown: the test
+      // framework checks this variable when the body returns, which is before
+      // tearDown runs.
+      Future<void> onLinux(Future<void> Function() body) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.linux;
+        try {
+          await body();
+        } finally {
+          debugDefaultTargetPlatformOverride = null;
+        }
+      }
+
+      Widget catalogued() => MediaQuery(
+            data: const MediaQueryData(size: Size(1440, 900)),
+            child: MaterialApp(
+              debugShowCheckedModeBanner: false,
+              theme: buildTheme(),
+              home: EditorLayout(
+                state: EditorViewState(
+                  photos: fixtures.syntheticPhotos(),
+                  thumbnails: {
+                    for (final p in fixtures.syntheticPhotos()) p.path: null
+                  },
+                  selected: 2,
+                  frame: fixtures.syntheticFrameInfo(),
+                  histogram: fixtures.syntheticHistogram(),
+                  edit: Edit.neutral,
+                  // An entry is what enables the keyword field. Without one it
+                  // is disabled and can never take focus, which is why the
+                  // tests above never saw this.
+                  entry: fixtures.syntheticEntry(),
+                  knownKeywords: fixtures.syntheticKeywords,
+                ),
+                onBrowse: () {},
+                onExport: () {},
+                onSelect: (_) {},
+                onEditChanged: (_) {},
+                onKeywordsChanged: (_) {},
+                onPreviousImage: () => fired.add('previous'),
+                onNextImage: () => fired.add('next'),
+                zoom: zoom,
+              ),
+            ),
+          );
+
+      testWidgets('the canvas still zooms once the field is left',
+          (tester) async {
+        await onLinux(() async {
+          await tester.pumpWidget(catalogued());
+          await tester.pumpAndSettle();
+
+          await tester.tap(find.byType(TextField));
+          await tester.pumpAndSettle();
+          // Moving a slider is what a photographer does next, and it is what
+          // takes the focus away again.
+          await tester.tap(find.byType(Slider).first);
+          await tester.pumpAndSettle();
+
+          await tester.sendKeyEvent(LogicalKeyboardKey.equal);
+          await tester.pump();
+          expect(zoom.scale, closeTo(CanvasZoom.step, 1e-9));
+        });
+      });
+
+      testWidgets('the arrows still step once the field is left',
+          (tester) async {
+        await onLinux(() async {
+          await tester.pumpWidget(catalogued());
+          await tester.pumpAndSettle();
+
+          await tester.tap(find.byType(TextField));
+          await tester.pumpAndSettle();
+          await tester.tap(find.byType(Slider).first);
+          await tester.pumpAndSettle();
+
+          await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+          await tester.pump();
+          expect(fired, ['next']);
+        });
+      });
+
+      // The other half of the same problem. While the field has focus the
+      // photographer is typing, and a hyphen belongs in "back-lit" rather than
+      // zooming the canvas out from under them.
+      testWidgets('the zoom keys are typing while the field has focus',
+          (tester) async {
+        await onLinux(() async {
+          await tester.pumpWidget(catalogued());
+          await tester.pumpAndSettle();
+
+          await tester.tap(find.byType(TextField));
+          await tester.pumpAndSettle();
+
+          // Only the main-row keys: flutter_test has no Linux key code for
+          // the numpad, and they are neutralised by the same map anyway.
+          for (final key in [
+            LogicalKeyboardKey.minus,
+            LogicalKeyboardKey.equal,
+          ]) {
+            await tester.sendKeyEvent(key);
+            await tester.pump();
+          }
+          expect(zoom.scale, closeTo(1.0, 1e-9),
+              reason: 'a keypress meant for the field zoomed the canvas');
+        });
+      });
+
+      testWidgets('tapping the canvas also leaves the bindings alive',
+          (tester) async {
+        await onLinux(() async {
+          await tester.pumpWidget(catalogued());
+          await tester.pumpAndSettle();
+
+          await tester.tap(find.byType(TextField));
+          await tester.pumpAndSettle();
+          await tester.tapAt(const Offset(700, 400));
+          await tester.pumpAndSettle();
+
+          await tester.sendKeyEvent(LogicalKeyboardKey.equal);
+          await tester.pump();
+          expect(zoom.scale, closeTo(CanvasZoom.step, 1e-9));
+        });
+      });
     });
 
     testWidgets('the canvas still zooms after a slider is used',

@@ -164,12 +164,30 @@ class _KeywordPanelState extends State<KeywordPanel> {
           // Enter commits, and so does a comma — typing "gull," should not
           // leave a dangling separator in the field.
           Shortcuts(
+            // Every editor binding, neutralised for as long as this field has
+            // focus. They are all keys a photographer types: the arrows move
+            // the caret rather than stepping through the folder, and the
+            // hyphen belongs in "back-lit" rather than zooming the canvas out
+            // from under them. A key handled here never reaches the editor's
+            // Shortcuts, because resolution walks up from the focused node and
+            // stops at the first match.
             shortcuts: const <ShortcutActivator, Intent>{
-              // The arrow keys step between frames at the editor level. Inside
-              // a text field they must move the caret instead, or the folder
-              // list jumps while a keyword is being typed.
-              SingleActivator(LogicalKeyboardKey.arrowLeft): DoNothingAndStopPropagationTextIntent(),
-              SingleActivator(LogicalKeyboardKey.arrowRight): DoNothingAndStopPropagationTextIntent(),
+              SingleActivator(LogicalKeyboardKey.arrowLeft):
+                  DoNothingAndStopPropagationTextIntent(),
+              SingleActivator(LogicalKeyboardKey.arrowRight):
+                  DoNothingAndStopPropagationTextIntent(),
+              SingleActivator(LogicalKeyboardKey.minus):
+                  DoNothingAndStopPropagationTextIntent(),
+              SingleActivator(LogicalKeyboardKey.equal):
+                  DoNothingAndStopPropagationTextIntent(),
+              SingleActivator(LogicalKeyboardKey.equal, shift: true):
+                  DoNothingAndStopPropagationTextIntent(),
+              SingleActivator(LogicalKeyboardKey.add):
+                  DoNothingAndStopPropagationTextIntent(),
+              SingleActivator(LogicalKeyboardKey.numpadAdd):
+                  DoNothingAndStopPropagationTextIntent(),
+              SingleActivator(LogicalKeyboardKey.numpadSubtract):
+                  DoNothingAndStopPropagationTextIntent(),
             },
             child: TextField(
               controller: _field,
