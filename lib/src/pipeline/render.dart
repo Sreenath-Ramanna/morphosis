@@ -181,6 +181,7 @@ void renderRgb8(
   DisplayLut disp,
   Uint8List dst, {
   double saturation = 0,
+  double vibrance = 0,
 }) {
   final table = disp.asBytes;
   final idxScale = disp.indexScale;
@@ -196,8 +197,10 @@ void renderRgb8(
   // Hoisted for correctness, not for speed: `y + (c − y) × 1.0` is not
   // bit-exactly `c`, so at zero the arithmetic has to be skipped rather than
   // passed through, or the neutral render moves by a code value.
-  final hasSaturation = saturation != 0;
-  final factor = 1 + saturation / saturationRange;
+  final hasColour = saturation != 0 || vibrance != 0;
+  final hasVibrance = vibrance != 0;
+  final satFactor = 1 + saturation / saturationRange;
+  final vibFactor = vibrance / vibranceRange;
 
   final n = width * height;
   var s = 0;
@@ -225,7 +228,7 @@ void renderRgb8(
     g *= gain;
     b *= gain;
 
-    if (hasSaturation) {
+    if (hasColour) {
       var i = (math.sqrt(r) * idxScale).toInt();
       final rv = table[i > maxIdx ? maxIdx : i].toDouble();
       i = (math.sqrt(g) * idxScale).toInt();
@@ -235,22 +238,36 @@ void renderRgb8(
 
       final y = rv * _lumaR + gv * _lumaG + bv * _lumaB;
       final dr = rv - y, dg = gv - y, db = bv - y;
-      // Below 1 every channel moves toward the luma, which is itself a convex
-      // combination of the three, so nothing can leave the range and no limit
-      // is needed.
+      // The widest excursion above the luma and the widest below. Both
+      // controls want them — vibrance to see how colourful the pixel already
+      // is, the gamut guard to see whether the boost reaches an edge — so
+      // they are found once, in four comparisons.
+      var hi = dr > dg ? dr : dg;
+      if (db > hi) hi = db;
+      var lo = dr < dg ? dr : dg;
+      if (db < lo) lo = db;
+
+      var factor = satFactor;
+      if (hasVibrance) {
+        // How saturated the pixel already is, on the same (max − min) / max
+        // that `saturate()` in ria_adjust.c uses: 0 at neutral, 1 once a
+        // channel has reached zero. Weighting the boost by 1 − that is the
+        // whole difference between vibrance and saturation — flat colour is
+        // lifted and an already-vivid sky is left where it is.
+        final maxc = y + hi;
+        final current = maxc > 0 ? (hi - lo) / maxc : 0.0;
+        factor *= 1 + vibFactor * (1 - current);
+      }
+
       // The limiter is consulted only when the boost would actually reach an
-      // edge. The two extreme distances cost four comparisons to find; the
-      // bounds themselves cost three divisions, and on most pixels every one
-      // of them comes back looser than the factor anyway.
+      // edge. Its three divisions are worth avoiding; on most pixels every
+      // bound comes back looser than the factor anyway. Below 1 no bound can
+      // bind at all: every channel is moving toward the luma, which is itself
+      // a convex combination of the three.
       var f = factor;
-      if (factor > 1) {
-        var hi = dr > dg ? dr : dg;
-        if (db > hi) hi = db;
-        var lo = dr < dg ? dr : dg;
-        if (db < lo) lo = db;
-        if (y + hi * factor > outMax || y + lo * factor < 0) {
-          f = _gamutLimit(factor, y, dr, dg, db, outMax);
-        }
+      if (factor > 1 &&
+          (y + hi * factor > outMax || y + lo * factor < 0)) {
+        f = _gamutLimit(factor, y, dr, dg, db, outMax);
       }
 
       var o = (y + dr * f + 0.5).toInt();
@@ -303,6 +320,7 @@ void renderRgb16(
   DisplayLut disp,
   Uint16List dst, {
   double saturation = 0,
+  double vibrance = 0,
 }) {
   final table = disp.asWords;
   final idxScale = disp.indexScale;
@@ -315,8 +333,10 @@ void renderRgb16(
   final m6 = matrix?[6] ?? 0, m7 = matrix?[7] ?? 0, m8 = matrix?[8] ?? 1;
   final hasMatrix = matrix != null;
 
-  final hasSaturation = saturation != 0;
-  final factor = 1 + saturation / saturationRange;
+  final hasColour = saturation != 0 || vibrance != 0;
+  final hasVibrance = vibrance != 0;
+  final satFactor = 1 + saturation / saturationRange;
+  final vibFactor = vibrance / vibranceRange;
 
   final n = width * height;
   var s = 0;
@@ -340,7 +360,7 @@ void renderRgb16(
     g *= gain;
     b *= gain;
 
-    if (hasSaturation) {
+    if (hasColour) {
       var i = (math.sqrt(r) * idxScale).toInt();
       final rv = table[i > maxIdx ? maxIdx : i].toDouble();
       i = (math.sqrt(g) * idxScale).toInt();
@@ -350,19 +370,36 @@ void renderRgb16(
 
       final y = rv * _lumaR + gv * _lumaG + bv * _lumaB;
       final dr = rv - y, dg = gv - y, db = bv - y;
+      // The widest excursion above the luma and the widest below. Both
+      // controls want them — vibrance to see how colourful the pixel already
+      // is, the gamut guard to see whether the boost reaches an edge — so
+      // they are found once, in four comparisons.
+      var hi = dr > dg ? dr : dg;
+      if (db > hi) hi = db;
+      var lo = dr < dg ? dr : dg;
+      if (db < lo) lo = db;
+
+      var factor = satFactor;
+      if (hasVibrance) {
+        // How saturated the pixel already is, on the same (max − min) / max
+        // that `saturate()` in ria_adjust.c uses: 0 at neutral, 1 once a
+        // channel has reached zero. Weighting the boost by 1 − that is the
+        // whole difference between vibrance and saturation — flat colour is
+        // lifted and an already-vivid sky is left where it is.
+        final maxc = y + hi;
+        final current = maxc > 0 ? (hi - lo) / maxc : 0.0;
+        factor *= 1 + vibFactor * (1 - current);
+      }
+
       // The limiter is consulted only when the boost would actually reach an
-      // edge. The two extreme distances cost four comparisons to find; the
-      // bounds themselves cost three divisions, and on most pixels every one
-      // of them comes back looser than the factor anyway.
+      // edge. Its three divisions are worth avoiding; on most pixels every
+      // bound comes back looser than the factor anyway. Below 1 no bound can
+      // bind at all: every channel is moving toward the luma, which is itself
+      // a convex combination of the three.
       var f = factor;
-      if (factor > 1) {
-        var hi = dr > dg ? dr : dg;
-        if (db > hi) hi = db;
-        var lo = dr < dg ? dr : dg;
-        if (db < lo) lo = db;
-        if (y + hi * factor > outMax || y + lo * factor < 0) {
-          f = _gamutLimit(factor, y, dr, dg, db, outMax);
-        }
+      if (factor > 1 &&
+          (y + hi * factor > outMax || y + lo * factor < 0)) {
+        f = _gamutLimit(factor, y, dr, dg, db, outMax);
       }
 
       var o = (y + dr * f + 0.5).toInt();

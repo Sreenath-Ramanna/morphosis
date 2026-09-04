@@ -17,6 +17,11 @@ const double evRange = 3.0;
 /// The full −50 … +50 range of the saturation control.
 const double saturationRange = 50.0;
 
+/// The vibrance control's range. Deliberately the same as saturation's, so the
+/// two sliders in the Colour section read on one scale and +50 means the same
+/// strength of boost on both.
+const double vibranceRange = 50.0;
+
 class Edit {
   /// Target colour temperature in Kelvin. Null means "as shot" — held as null
   /// rather than as a number so that reopening the same frame reproduces
@@ -49,6 +54,12 @@ class Edit {
   /// future native path agree by construction.
   final double saturation;
 
+  /// Vibrance, −50 … +50. Saturation weighted by how flat the pixel already
+  /// is: `1 + (v / vibranceRange) × (1 − current)`, so it lifts washed-out
+  /// colour and leaves an already-vivid sky alone. `v / vibranceRange` is
+  /// numerically `ria_adjustments.vibrance`.
+  final double vibrance;
+
   /// Roll the highlights off with the extended-Reinhard shoulder instead of
   /// clipping them. Off reproduces what a plain decode does.
   final bool highlightRolloff;
@@ -67,6 +78,7 @@ class Edit {
     this.contrastEv = 0,
     this.sharpness = 0,
     this.saturation = 0,
+    this.vibrance = 0,
     this.highlightRolloff = false,
     this.geometry = Geometry.identity,
   });
@@ -83,6 +95,7 @@ class Edit {
       contrastEv == 0 &&
       sharpness == 0 &&
       saturation == 0 &&
+      vibrance == 0 &&
       !highlightRolloff &&
       geometry.isIdentity;
 
@@ -97,6 +110,7 @@ class Edit {
     double? contrastEv,
     double? sharpness,
     double? saturation,
+    double? vibrance,
     bool? highlightRolloff,
     Geometry? geometry,
   }) =>
@@ -111,6 +125,7 @@ class Edit {
         contrastEv: contrastEv ?? this.contrastEv,
         sharpness: sharpness ?? this.sharpness,
         saturation: saturation ?? this.saturation,
+        vibrance: vibrance ?? this.vibrance,
         highlightRolloff: highlightRolloff ?? this.highlightRolloff,
         geometry: geometry ?? this.geometry,
       );
@@ -132,12 +147,13 @@ class Edit {
       other.contrastEv == contrastEv &&
       other.sharpness == sharpness &&
       other.saturation == saturation &&
+      other.vibrance == vibrance &&
       other.highlightRolloff == highlightRolloff &&
       other.geometry == geometry;
 
   @override
   int get hashCode => Object.hash(temperatureK, blackEv, shadowEv, highlightEv,
-      whiteEv, brightnessEv, contrastEv, sharpness, saturation,
+      whiteEv, brightnessEv, contrastEv, sharpness, saturation, vibrance,
       highlightRolloff, geometry);
 
   /// True when only the tonal controls differ, so a re-render can reuse the
@@ -179,6 +195,7 @@ class Edit {
         'contrastEv': contrastEv,
         'sharpness': sharpness,
         'saturation': saturation,
+        'vibrance': vibrance,
         'highlightRolloff': highlightRolloff,
         'geometry': geometry.toJson(),
       };
@@ -216,6 +233,7 @@ class Edit {
       contrastEv: d('contrastEv', defaults.contrastEv),
       sharpness: d('sharpness', defaults.sharpness),
       saturation: d('saturation', defaults.saturation),
+      vibrance: d('vibrance', defaults.vibrance),
       highlightRolloff:
           json['highlightRolloff'] as bool? ?? defaults.highlightRolloff,
       geometry: geometry is Map<String, Object?>

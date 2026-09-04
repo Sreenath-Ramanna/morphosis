@@ -188,6 +188,7 @@ void main() {
         contrastEv: 0.7,
         sharpness: 0.6,
         saturation: 18,
+        vibrance: -6,
         highlightRolloff: true,
       ),
       status: '10 RAW files',
@@ -258,6 +259,7 @@ void main() {
       'Brightness',
       'Contrast',
       'Saturation',
+      'Vibrance',
       'Sharpness',
     ]) {
       await tester.scrollUntilVisible(find.text(label), 120,
@@ -276,33 +278,38 @@ void main() {
 
   // The formatter is the one part of the control no golden can assert and no
   // render test reaches: an integer, a sign, and U+2212 rather than a hyphen.
-  testWidgets('the saturation value reads as a signed integer', (tester) async {
+  testWidgets('the colour values read as signed integers', (tester) async {
     tester.view.physicalSize = _size;
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
 
-    Future<void> pumpAt(double saturation) async {
+    Future<void> pumpAt(double saturation, double vibrance) async {
       await tester.pumpWidget(harness(EditorViewState(
         frame: syntheticFrameInfo(),
         histogram: syntheticHistogram(),
         photos: syntheticPhotos(),
         thumbnails: {for (final p in syntheticPhotos()) p.path: null},
         selected: 0,
-        edit: Edit(saturation: saturation),
+        edit: Edit(saturation: saturation, vibrance: vibrance),
       )));
       await tester.pumpAndSettle();
-      await tester.scrollUntilVisible(find.text('Saturation'), 120,
+      await tester.scrollUntilVisible(find.text('Vibrance'), 120,
           scrollable: find.byType(Scrollable).last);
     }
 
-    await pumpAt(18);
+    // Different values on the two sliders, so a formatter wired to the wrong
+    // field cannot pass by coincidence.
+    await pumpAt(18, 42);
     expect(find.text('+18'), findsOneWidget);
+    expect(find.text('+42'), findsOneWidget);
 
-    await pumpAt(-7.4);
+    await pumpAt(-7.4, -31);
     expect(find.text('−7'), findsOneWidget, reason: 'U+2212, not a hyphen');
+    expect(find.text('−31'), findsOneWidget);
 
-    await pumpAt(0);
-    expect(find.text('0'), findsOneWidget);
+    // Neutral is bare, with no sign on either.
+    await pumpAt(0, 0);
+    expect(find.text('0'), findsNWidgets(2));
   });
 
   testWidgets('a temperature the camera cannot express disables the control',

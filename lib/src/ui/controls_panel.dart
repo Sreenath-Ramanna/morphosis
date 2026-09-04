@@ -182,8 +182,21 @@ class ControlsPanel extends StatelessWidget {
               note: 'Contrast acts on luminance only, so hue never moves — '
                   'and the colour it leaves behind can read flat. This is the '
                   'remedy: every channel\'s distance from the pixel\'s own '
-                  'luma, scaled. It runs after the display transform, so it '
-                  'is independent of the highlight rolloff.',
+                  'luma, scaled, on every pixel alike. It runs after the '
+                  'display transform, so it is independent of the highlight '
+                  'rolloff.',
+            ),
+            AdjustSlider(
+              label: 'Vibrance',
+              value: edit.vibrance,
+              min: -vibranceRange,
+              max: vibranceRange,
+              format: _saturation,
+              onChanged: (v) => onChanged(edit.copyWith(vibrance: v)),
+              note: 'The same scaling, weighted by how flat each pixel '
+                  'already is — washed-out colour is lifted and an '
+                  'already-vivid sky is left where it is. Reach for this one '
+                  'first; it is the setting that survives being pushed.',
             ),
           ],
         ),

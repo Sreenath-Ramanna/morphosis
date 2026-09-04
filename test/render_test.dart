@@ -6,7 +6,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:morphosis/src/model/edit.dart' show saturationRange;
+import 'package:morphosis/src/model/edit.dart' show saturationRange, vibranceRange;
 import 'package:morphosis/src/pipeline/export.dart';
 import 'package:morphosis/src/pipeline/render.dart';
 import 'package:morphosis/src/pipeline/tone.dart';
@@ -51,6 +51,112 @@ Uint16List _colourFrame() {
 }
 
 void main() {
+  group('vibrance', () {
+    final src = _vibranceFrame();
+    final n = _vibrancePairs.length;
+    final base = _render8(src, n, 0);
+
+    test('zero is byte-exact, with and without saturation', () {
+      for (final sat in [0.0, 30.0, -30.0]) {
+        final withoutIt = _render8(src, n, sat);
+        final withZero = _render8(src, n, sat, vibrance: 0);
+        expect(withZero, withoutIt,
+            reason: 'vibrance 0 must change nothing at saturation $sat');
+      }
+    });
+
+    test('a boost lifts flat colour further than vivid colour', () {
+      // The defining property, and the whole difference from saturation:
+      // the weight is 1 − how saturated the pixel already is.
+      for (final setting in [25.0, 50.0]) {
+        final out = _render8(src, n, 0, vibrance: setting);
+        for (var pair = 0; pair < n; pair += 2) {
+          final pale = pair, vivid = pair + 1;
+          final paleGain = _spread(out, pale) / _spread(base, pale);
+          final vividGain = _spread(out, vivid) / _spread(base, vivid);
+          expect(paleGain, greaterThan(vividGain),
+              reason: 'vibrance $setting: the pale patch $pale gained '
+                  '${paleGain.toStringAsFixed(3)}× and the vivid patch '
+                  '$vivid gained ${vividGain.toStringAsFixed(3)}×');
+          expect(paleGain, greaterThan(1.0));
+        }
+      }
+    });
+
+    test('a pixel already at full saturation is left alone at every setting',
+        () {
+      // One channel at zero means the weight is exactly 1 − 1, so the factor
+      // is exactly 1 and the write must land on the same code it started on.
+      final full = Uint16List.fromList([30000, 0, 0]);
+      final flat = _render8(full, 1, 0);
+      expect(flat[1], 0, reason: 'the patch must really be fully saturated');
+
+      for (final setting in [-50.0, -10.0, 10.0, 50.0]) {
+        expect(_render8(full, 1, 0, vibrance: setting), flat,
+            reason: 'vibrance $setting must not move a pixel that has no '
+                'flatness left to lift');
+      }
+    });
+
+    test('luma is preserved at every setting', () {
+      for (var setting = -vibranceRange;
+          setting <= vibranceRange;
+          setting += 5) {
+        final out = _render8(src, n, 0, vibrance: setting);
+        for (var i = 0; i < n; i++) {
+          expect(_lumaAt(out, i), closeTo(_lumaAt(base, i), 1.0),
+              reason: 'vibrance $setting, patch $i');
+        }
+      }
+    });
+
+    test('a boost holds the hue direction', () {
+      var checked = 0;
+      for (final setting in [10.0, 25.0, 50.0]) {
+        final out = _render8(src, n, 0, vibrance: setting);
+        for (var i = 0; i < n; i++) {
+          if (!_wellInside(base, i)) continue;
+          _expectSameDirection(base, out, i, 'vibrance $setting, patch $i');
+          checked++;
+        }
+      }
+      expect(checked, greaterThan(4));
+    });
+
+    test('the two controls compose, neither cancelling the other', () {
+      // The factors multiply, so both together can only widen what either
+      // widened alone.
+      final sat = _render8(src, n, 25);
+      final vib = _render8(src, n, 0, vibrance: 25);
+      final both = _render8(src, n, 25, vibrance: 25);
+      for (var i = 0; i < n; i++) {
+        if (!_wellInside(base, i)) continue;
+        expect(_spread(both, i), greaterThanOrEqualTo(_spread(sat, i)),
+            reason: 'patch $i');
+        expect(_spread(both, i), greaterThanOrEqualTo(_spread(vib, i)),
+            reason: 'patch $i');
+      }
+    });
+
+    test('the export loop applies it too', () {
+      // renderRgb16 is a separate loop with a wider table; a fix applied to
+      // one and not the other shows up here and nowhere else.
+      final t = Tone(greyPoint: _greyPoint);
+      final disp =
+          t.buildDisplayLut(outMax: 65535, entries: DisplayLut.exportEntries);
+      final flat = Uint16List(n * 3);
+      renderRgb16(src, n, 1, null, t.buildGainLut(), disp, flat);
+      final boosted = Uint16List(n * 3);
+      renderRgb16(src, n, 1, null, t.buildGainLut(), disp, boosted,
+          vibrance: vibranceRange);
+
+      for (var pair = 0; pair < n; pair += 2) {
+        expect(_spread(boosted, pair), greaterThan(_spread(flat, pair)),
+            reason: 'the pale patch $pair must be lifted in the export loop');
+      }
+    });
+  });
+
   group('the fused pass', () {
     test('a neutral edit is monotonic across fourteen stops', () {
       const n = 512;
@@ -496,13 +602,36 @@ void main() {
 /// only thing moving between two renders is the setting under test.
 const double _greyPoint = 0.18;
 
-Uint8List _render8(Uint16List src, int n, double saturation) {
+Uint8List _render8(Uint16List src, int n, double saturation,
+    {double vibrance = 0}) {
   final t = Tone(greyPoint: _greyPoint);
   final dst = Uint8List(n * 3);
   renderRgb8(src, n, 1, null, t.buildGainLut(),
       t.buildDisplayLut(outMax: 255, entries: DisplayLut.previewEntries), dst,
-      saturation: saturation);
+      saturation: saturation, vibrance: vibrance);
   return dst;
+}
+
+/// Pairs of the same hue, one washed out and one vivid, at similar luma.
+/// Vibrance is defined by what it does *differently* to the two, so a frame
+/// of uniformly vivid patches could not test it at all.
+const _vibrancePairs = <List<int>>[
+  [11000, 12500, 15500], // pale blue
+  [3000, 6000, 30000], // vivid blue
+  [13000, 15000, 11500], // pale green
+  [4000, 26000, 6000], // vivid green
+  [16000, 13500, 13000], // pale warm
+  [30000, 9000, 4500], // vivid warm
+];
+
+Uint16List _vibranceFrame() {
+  final out = Uint16List(_vibrancePairs.length * 3);
+  for (var i = 0; i < _vibrancePairs.length; i++) {
+    out[i * 3] = _vibrancePairs[i][0];
+    out[i * 3 + 1] = _vibrancePairs[i][1];
+    out[i * 3 + 2] = _vibrancePairs[i][2];
+  }
+  return out;
 }
 
 Uint16List _render16(Uint16List src, int n, double saturation) {

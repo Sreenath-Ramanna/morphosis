@@ -4,8 +4,8 @@ A non-destructive camera RAW editor for Linux desktop, built on
 [raw_images_api](https://github.com/Sreenath-Ramanna/raw_images_api).
 
 Browse to a folder, pick a frame, and adjust colour temperature, four
-exposure zones, brightness, contrast, saturation and sharpness with the canvas
-following each slider. Export to 16-bit TIFF or JPEG.
+exposure zones, brightness, contrast, saturation, vibrance and sharpness with
+the canvas following each slider. Export to 16-bit TIFF or JPEG.
 
 **The RAW file is never written to.** It is opened read-only, the adjustments
 live in memory, and an export decodes the file again and writes a new one at a
@@ -40,7 +40,8 @@ most of the height. See `apply_compact_titlebar_css` in
 ## The three tabs
 
 **Colour** holds every tonal control: white balance, the four exposure zones,
-brightness, contrast, saturation and sharpness, with the histogram above them.
+brightness, contrast, saturation, vibrance and sharpness, with the histogram
+above them.
 
 **Crop** holds rotation in quarter turns, a straighten slider, and the aspect
 constraints; the rectangle itself is dragged on the canvas, where pan and zoom
@@ -196,7 +197,7 @@ Measured on a 24 MP NEF and a 33 MP CR3, release build:
 | open + read metadata and colour data | 1–2 ms |
 | scene-linear decode to a 1600 px preview | 1.9 s |
 | fused render pass (1.7 MP) | 60–70 ms |
-| the same pass with saturation off zero | 100–110 ms |
+| the same pass with saturation or vibrance off zero | 90–115 ms |
 | unsharp mask | 60 ms |
 | histogram | 3–4 ms |
 | full-resolution TIFF export | 5–7 s |
@@ -237,7 +238,7 @@ Everything specified in EV happens on that linear data:
      ▼
   ┌──────────────────────────────────────────────┐
   │  DISPLAY-REFERRED   8 or 16-bit encoded      │
-  │    saturation                                │  render.dart
+  │    saturation, vibrance                      │  render.dart
   │    unsharp mask            ria_unsharp_mask  │
   │    256-bin histogram   ria_compute_histogram │
   └──────────────────────────────────────────────┘
@@ -263,6 +264,7 @@ the test approach.md §11 specifies for catching it.
 | Brightness | display | the transform's grey point — a midtone placement |
 | Contrast | scene | slope `2^(c/3)` about the midtone, on luminance only |
 | Saturation | display | distance from luma × (1 + s/50), limited per pixel so no channel leaves range |
+| Vibrance | display | the same, weighted by 1 − how saturated the pixel already is |
 | Sharpness | display | `ria_unsharp_mask`, applied last |
 
 Brightness is the grey point rather than a second exposure control, following
@@ -333,7 +335,12 @@ differ only in the toe.
 The operation is the library's: `c' = y + (c − y)·f`, with `y` the Rec.709
 luma of the encoded values and `f = 1 + s/50`, so the slider value divided by
 50 is numerically `ria_adjustments.saturation` and the two implementations
-agree by construction on the arithmetic.
+agree by construction on the arithmetic. Vibrance multiplies a second factor
+into the same `f` — `1 + (v/50)·(1 − current)`, where `current` is
+`(max − min) / max`, how saturated the pixel already is — which is again the
+library's own definition, and again on the same 1:1 scale. One factor reaches
+the pixel, so the two controls compose without a second pass or a second
+rounding step.
 
 They part company at the gamut edge. `saturate()`
 (`raw_images_api/src/ria_adjust.c:134-154`) clamps each channel independently
