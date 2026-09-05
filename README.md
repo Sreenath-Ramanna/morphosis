@@ -182,6 +182,7 @@ from a file manager opens the folder that holds it with that frame selected.
 
 ```bash
 flutter test                                    # unit, widget and golden
+./scripts/check-ffi.sh                          # stamp, enum values, symbols
 dart run tool/pipeline_check.dart /tmp/out ~/photos/*.NEF
 ```
 
@@ -200,8 +201,16 @@ Measured on a 24 MP NEF and a 33 MP CR3, release build:
 | the same pass with saturation or vibrance off zero | 90–115 ms |
 | unsharp mask | 60 ms |
 | histogram | 3–4 ms |
-| full-resolution TIFF export | 5–7 s |
-| full-resolution JPEG export | 10–14 s |
+| full-resolution TIFF export | 19–20 s |
+| full-resolution JPEG export | 22–23 s |
+
+The two export figures are dominated by the decode, and are deliberate. Export
+demosaics with AAHD where the preview uses the library's default PPG: it
+resolves the most fine detail of the seven algorithms LibRaw offers, for about
+11 s more on a 33 MP frame. Morphosis produces images for print and
+presentation, and export is the one path where that is settled, so it buys the
+best reconstruction available. The preview does not, because it is resampled to
+1600 px and the differences between these algorithms do not survive that.
 
 [PLAN.md](PLAN.md) covers the catalogue, which is planned and not yet built.
 

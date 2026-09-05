@@ -19,8 +19,9 @@ abstract final class RiaStatus {
   static const int memory = -2;
   static const int io = -3;
   static const int unsupported = -4;
-  static const int noData = -5;
-  static const int internal = -6;
+  static const int decode = -5;
+  static const int noData = -6;
+  static const int internal = -7;
 }
 
 // ── Enums, as plain ints ──────────────────────────────────────────────────
@@ -41,10 +42,12 @@ abstract final class RiaTransfer {
 }
 
 abstract final class RiaResizeFilter {
-  static const int nearest = 0;
-  static const int bilinear = 1;
-  static const int catmullRom = 2;
-  static const int lanczos3 = 3;
+  /// Triangle, with a support that widens as the image shrinks: a correct
+  /// area average when reducing. What a downscale wants.
+  static const int triangle = 0;
+
+  /// Nearest neighbour. Fast, blocky.
+  static const int nearest = 1;
 }
 
 abstract final class RiaDemosaic {
@@ -52,6 +55,9 @@ abstract final class RiaDemosaic {
   static const int vng = 1;
   static const int ppg = 2;
   static const int ahd = 3;
+  static const int dcb = 4;
+  static const int dht = 11;
+  static const int aahd = 12;
 }
 
 /// LibRaw orientation codes, as carried on `ria_image.pending_flip`.

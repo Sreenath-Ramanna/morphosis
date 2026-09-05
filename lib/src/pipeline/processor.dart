@@ -36,6 +36,24 @@ import 'tone.dart';
 /// export", applied to the whole pipeline rather than only to white balance.
 const int previewMaxEdge = 1600;
 
+/// The demosaic the export decode asks for.
+///
+/// AAHD, where the preview uses the library's default PPG. Morphosis produces
+/// images for print and presentation, and export is the one path where that is
+/// decided, so it buys the best reconstruction available and pays for it.
+///
+/// Measured on a 33 MP CR3 and a 24 MP NEF, scene-linear 16-bit: AAHD resolves
+/// the most high-frequency detail of the seven algorithms LibRaw offers, for
+/// 11.4 s against PPG's 1.5 s. DCB was rejected despite a good error score —
+/// it puts visible magenta fringing on specular highlights.
+///
+/// The preview deliberately does *not* get this. It is resampled to
+/// [previewMaxEdge], a 4.4x reduction from a 6984 px frame, which destroys the
+/// pixel-level differences that separate these algorithms — so there it would
+/// cost seconds of interactivity per frame and show nothing. Export already
+/// runs on a throwaway isolate off the interactive worker.
+const int exportDemosaic = RiaDemosaic.aahd;
+
 /// What the UI learns when a frame is opened.
 class FrameInfo {
   final String path;
@@ -437,6 +455,11 @@ Future<String> runExportIsolate(ExportRequest req) =>
 /// re-decode through the same scene-linear preset: the tone engine's EV scale
 /// is anchored to sensor saturation, so a full-resolution decode and the
 /// preview agree about what "−2 EV" means without any renormalisation.
+///
+/// The preset is the same; the demosaic is not. Export asks for
+/// [exportDemosaic] where the preview takes the default. That changes which
+/// pixels are reconstructed, not what a value means — the anchor is set by the
+/// gamma, auto-brightness and highlight settings, which are shared.
 Future<String> runExport(ExportRequest req) async {
   Ria.libraryPathOverride = req.soPath;
 
@@ -445,7 +468,7 @@ Future<String> runExport(ExportRequest req) async {
   final WhiteBalance wb;
   try {
     wb = WhiteBalance.from(f.colorData());
-    decoded = f.decodeSceneLinear();
+    decoded = f.decodeSceneLinear(demosaic: exportDemosaic);
   } finally {
     f.close();
   }

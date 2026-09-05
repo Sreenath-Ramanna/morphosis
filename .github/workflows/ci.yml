@@ -84,7 +84,7 @@ jobs:
           if-no-files-found: ignore
 
   ffi:
-    name: FFI stamp
+    name: FFI stamp and enums
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -104,6 +104,12 @@ jobs:
       # library's side gets noticed, since that is a different repository.
       - name: Header digest against the recorded stamp
         run: ./scripts/check-ffi.sh --stamp _deps/raw_images_api/include/raw_images_api.h
+
+      # The stamp only fires when the header moves. It cannot see bindings.dart
+      # falling behind a header that then sits still, which is how ria_status
+      # and ria_resize_filter drifted. This compares the values themselves.
+      - name: Mirrored enum values against the header
+        run: ./scripts/check-ffi.sh --enums _deps/raw_images_api/include/raw_images_api.h
 
   build:
     runs-on: ubuntu-latest
