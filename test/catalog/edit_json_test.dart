@@ -23,6 +23,7 @@ const populated = Edit(
   vibrance: -7.5,
   highlightRolloff: true,
   highlightRecovery: true,
+  cameraLook: CameraLook.camera,
   geometry: Geometry(
     quarterTurns: 1,
     straightenDegrees: 4,
@@ -222,6 +223,52 @@ void main() {
       expect(off.copyWith(highlightRecovery: true), on);
       expect(on.isNeutral, isFalse);
       expect(off.isNeutral, isTrue);
+    });
+  });
+
+  group('camera look', () {
+    test('L15 it round-trips, and absent means none', () {
+      expect(Edit.fromJson(populated.toJson()).cameraLook, CameraLook.camera);
+      // A string, not an ordinal: inserting a value into the enum later must
+      // not silently reinterpret every stored edit.
+      expect(populated.toJson()['cameraLook'], 'camera');
+      // A document written before this build has no such key, and must read
+      // back as the render it was made with. That is why no jsonVersion bump
+      // is needed, and this is the assertion that says so.
+      expect(Edit.fromJson(without(populated, 'cameraLook')).cameraLook,
+          CameraLook.none);
+      // A look this build has never heard of, and a value that is not a name
+      // at all: both fall back rather than throwing on a catalogue row.
+      expect(Edit.fromJson({'v': 1, 'cameraLook': 'kodachrome'}).cameraLook,
+          CameraLook.none);
+      expect(Edit.fromJson({'v': 1, 'cameraLook': 3}).cameraLook,
+          CameraLook.none);
+      expect(Edit.neutral.cameraLook, CameraLook.none);
+    });
+
+    test('L16 it participates in identity', () {
+      const off = Edit();
+      const on = Edit(cameraLook: CameraLook.camera);
+      // In copyWith but not in `==` gives a switch that flips in the UI, is
+      // never stored (catalog_writer's `if (edit == entry.edit …)`) and never
+      // triggers a re-render (editor_screen's coalescing loop) — and all three
+      // failures look exactly like the switch working.
+      expect(on, isNot(off));
+      expect(on.hashCode, isNot(off.hashCode));
+      expect(off.copyWith(cameraLook: CameraLook.camera), on);
+      expect(on.isNeutral, isFalse);
+      expect(off.isNeutral, isTrue);
+    });
+
+    test('L17 the look is downstream of the decode and of the histogram', () {
+      // `_medianEv` is measured in `_ensureWorking`, from the geometry-applied
+      // buffer, before any tone or colour work. The only Edit fields upstream
+      // of it are the geometry and the highlight-recovery decode mode, so the
+      // look moving neither is what makes the scene anchor stand still.
+      const on = Edit(cameraLook: CameraLook.camera);
+      expect(on.sameGeometryAs(Edit.neutral), isTrue);
+      expect(on.highlightRecovery, Edit.neutral.highlightRecovery);
+      expect(on.temperatureK, Edit.neutral.temperatureK);
     });
   });
 

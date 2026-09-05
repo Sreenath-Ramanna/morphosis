@@ -22,6 +22,51 @@ const double saturationRange = 50.0;
 /// strength of boost on both.
 const double vibranceRange = 50.0;
 
+/// An opt-in look, applied on top of every control rather than instead of one.
+///
+/// An enum rather than a boolean because a second look should be a value, not a
+/// migration of every stored document (PLAN.md section 6). Serialised by
+/// **name**, so inserting a value here cannot reinterpret an edit already on
+/// disk.
+enum CameraLook {
+  /// No look. Sliders at zero mean the scene-referred neutral render, and the
+  /// output is byte-identical to a build that has never heard of this enum.
+  none(gain: 1.0, saturationBoost: 0.0),
+
+  /// A fixed base curve plus the colour that goes with it. Reproduces a plain
+  /// LibRaw decode's tonality; see tone.dart for the curve.
+  camera(gain: 1.431, saturationBoost: 20.0);
+
+  const CameraLook({required this.gain, required this.saturationBoost});
+
+  /// `k` in `base(v) = srgbDecode(dcrawEncode(k * v))`.
+  ///
+  /// Only read when the look is not [none]. `none` carries 1.0 to keep the row
+  /// complete, and [isNone] short-circuits before the curve is ever evaluated —
+  /// `k = 1` is *not* the identity, because the curve is still dcraw's.
+  final double gain;
+
+  /// What the look contributes, in the units of [Edit.saturation]. Composed
+  /// multiplicatively with the slider, which stays at zero.
+  final double saturationBoost;
+
+  bool get isNone => this == CameraLook.none;
+}
+
+/// Read a stored look by name.
+///
+/// `CameraLook.values.byName` throws on an unknown name; a catalogue row is not
+/// the place for that. Anything unrecognised — a look a later build wrote, or a
+/// value that is not a string at all — falls back to the default.
+CameraLook _cameraLook(Object? raw, CameraLook fallback) {
+  if (raw is String) {
+    for (final look in CameraLook.values) {
+      if (look.name == raw) return look;
+    }
+  }
+  return fallback;
+}
+
 class Edit {
   /// Target colour temperature in Kelvin. Null means "as shot" — held as null
   /// rather than as a number so that reopening the same frame reproduces
@@ -74,6 +119,11 @@ class Edit {
   /// it only puts detail back where there was a flat white patch.
   final bool highlightRecovery;
 
+  /// An opt-in fixed look: a base curve in the gain table plus the saturation
+  /// that goes with it, applied on top of every control. [CameraLook.none] is
+  /// the scene-referred neutral render, byte for byte.
+  final CameraLook cameraLook;
+
   /// Rotation and crop. Applied to the scene-referred buffer before anything
   /// else, so the histogram and the automatic grey point describe the crop.
   final Geometry geometry;
@@ -91,6 +141,7 @@ class Edit {
     this.vibrance = 0,
     this.highlightRolloff = false,
     this.highlightRecovery = false,
+    this.cameraLook = CameraLook.none,
     this.geometry = Geometry.identity,
   });
 
@@ -109,6 +160,7 @@ class Edit {
       vibrance == 0 &&
       !highlightRolloff &&
       !highlightRecovery &&
+      cameraLook.isNone &&
       geometry.isIdentity;
 
   Edit copyWith({
@@ -125,6 +177,7 @@ class Edit {
     double? vibrance,
     bool? highlightRolloff,
     bool? highlightRecovery,
+    CameraLook? cameraLook,
     Geometry? geometry,
   }) =>
       Edit(
@@ -141,6 +194,7 @@ class Edit {
         vibrance: vibrance ?? this.vibrance,
         highlightRolloff: highlightRolloff ?? this.highlightRolloff,
         highlightRecovery: highlightRecovery ?? this.highlightRecovery,
+        cameraLook: cameraLook ?? this.cameraLook,
         geometry: geometry ?? this.geometry,
       );
 
@@ -164,12 +218,13 @@ class Edit {
       other.vibrance == vibrance &&
       other.highlightRolloff == highlightRolloff &&
       other.highlightRecovery == highlightRecovery &&
+      other.cameraLook == cameraLook &&
       other.geometry == geometry;
 
   @override
   int get hashCode => Object.hash(temperatureK, blackEv, shadowEv, highlightEv,
       whiteEv, brightnessEv, contrastEv, sharpness, saturation, vibrance,
-      highlightRolloff, highlightRecovery, geometry);
+      highlightRolloff, highlightRecovery, cameraLook, geometry);
 
   /// True when only the tonal controls differ, so a re-render can reuse the
   /// cached geometry-applied buffer instead of resampling again.
@@ -213,6 +268,9 @@ class Edit {
         'vibrance': vibrance,
         'highlightRolloff': highlightRolloff,
         'highlightRecovery': highlightRecovery,
+        // By name, never by ordinal: inserting a value into the enum later
+        // must not reinterpret every edit already on disk.
+        'cameraLook': cameraLook.name,
         'geometry': geometry.toJson(),
       };
 
@@ -257,6 +315,12 @@ class Edit {
       // reads back as recovery off — which is what it was rendered with.
       highlightRecovery:
           json['highlightRecovery'] as bool? ?? defaults.highlightRecovery,
+      // By name, and tolerant: absent covers every document written before this
+      // build, and an unrecognised name covers a look this build has never
+      // heard of. The version guard above already refuses a higher `v`, so that
+      // can only arise within one version — and rendering a known-neutral frame
+      // beats throwing on a catalogue row.
+      cameraLook: _cameraLook(json['cameraLook'], defaults.cameraLook),
       geometry: geometry is Map<String, Object?>
           ? Geometry.fromJson(geometry)
           : defaults.geometry,

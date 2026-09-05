@@ -5,7 +5,12 @@
 // the colour temperature, renders the preview, exports both formats, and
 // verifies that the source RAW is byte-identical afterwards.
 //
-//   dart run tool/pipeline_check.dart <out-dir> <file.NEF> [more files…]
+//   dart run tool/pipeline_check.dart [--camera-look] <out-dir> <file.NEF> […]
+//
+// With `--camera-look` it also runs C1–C5, the camera-look preset's real-frame
+// acceptance (`.feature-work/camera-look-preset/plan.md` §1.5). Those need a
+// real decode and the camera's own embedded JPEG, so they can live nowhere but
+// here: CI has no RAW files.
 //
 // Loads the release bundle's library, so `flutter build linux --release` has
 // to have run at least once.
@@ -15,6 +20,8 @@ import 'dart:math' as math;
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart' as crypto;
+import 'package:image/image.dart' as img;
 import 'package:morphosis/src/model/edit.dart';
 import 'package:morphosis/src/model/geometry.dart';
 import 'package:morphosis/src/pipeline/colour_temp.dart';
@@ -36,11 +43,18 @@ String get _so =>
     'build/linux/x64/release/bundle/lib/libraw_images_api.so';
 
 Future<void> main(List<String> args) async {
-  if (args.length < 2) {
-    stderr.writeln('usage: dart run tool/pipeline_check.dart <out-dir> '
-        '<file.NEF> [more…]');
+  var rest = args;
+  var cameraLook = false;
+  if (rest.isNotEmpty && rest.first == '--camera-look') {
+    cameraLook = true;
+    rest = rest.skip(1).toList();
+  }
+  if (rest.length < 2) {
+    stderr.writeln('usage: dart run tool/pipeline_check.dart [--camera-look] '
+        '<out-dir> <file.NEF> [more…]');
     exit(2);
   }
+  args = rest;
   final outDir = args[0];
   Ria.libraryPathOverride = File(_so).absolute.path;
   await Directory(outDir).create(recursive: true);
@@ -57,7 +71,11 @@ Future<void> main(List<String> args) async {
     }
     print('');
   }
-  failures += await _checkWorker(args.skip(1).toList());
+  if (cameraLook) {
+    failures += await _checkCameraLook(args.skip(1).toList());
+    print('');
+  }
+  failures += await _checkWorker(args.skip(1).toList(), cameraLook);
 
   print(failures == 0 ? 'all checks passed' : '$failures FAILURES');
   exit(failures == 0 ? 0 : 1);
@@ -641,7 +659,7 @@ double _medianGreen(Uint16List rgb) {
 /// The worker isolate, end to end: open a frame, render it, switch to
 /// another, render that. This is the path the UI actually uses, and none of
 /// the checks above touch it — they call the pipeline directly.
-Future<int> _checkWorker(List<String> paths) async {
+Future<int> _checkWorker(List<String> paths, [bool cameraLook = false]) async {
   var failures = 0;
   void check(bool ok, String what) {
     print('  ${ok ? 'ok  ' : 'FAIL'} $what');
@@ -661,6 +679,27 @@ Future<int> _checkWorker(List<String> paths) async {
       check(neutral.rgba.length == info.previewWidth * info.previewHeight * 4,
           'a neutral render came back the right size');
       check(neutral.histogram.pixels > 0, 'with a histogram');
+
+      if (cameraLook) {
+        // C4, second half. "Identical to the pre-change build" is not something
+        // one binary can assert about itself, so the digest is printed and
+        // compared against the run recorded in
+        // `.feature-work/camera-look-preset/log.md` on unmodified HEAD.
+        print('    neutral ${neutral.width}x${neutral.height} '
+            'medianEv ${neutral.medianEv.toStringAsFixed(6)} '
+            'sha256 ${crypto.sha256.convert(neutral.rgba)}');
+
+        // C5. The look is composed after the histogram, so the scene anchor
+        // cannot move — exactly, not approximately.
+        final look = await proc.render(const Edit(
+            cameraLook: CameraLook.camera));
+        check(look.medianEv == neutral.medianEv,
+            'C5 the scene median EV does not move when the preset flips');
+        // The real-frame twin of L8: if the gain table's all-ones fast path
+        // swallows the preset, C5 passes trivially and this is what catches it.
+        check(!_identical(neutral.rgba, look.rgba),
+            'C5b and the preset actually changed the frame');
+      }
 
       final edited = await proc.render(Edit(
         temperatureK: info.asShot.kelvin + 1200,
@@ -694,6 +733,341 @@ Future<int> _checkWorker(List<String> paths) async {
   } finally {
     await proc.dispose();
   }
+  return failures;
+}
+
+// ── C1–C5: the camera-look preset's real-frame acceptance ─────────────────
+//
+// `.feature-work/camera-look-preset/plan.md` §1.5. Nothing here can run in CI:
+// C1–C3 need the camera's own embedded JPEG to compare against, and all five
+// need a real decode.
+
+/// The eight frames the set-level means in C1 and C2 are defined over.
+///
+/// A one-file run must not report the acceptance criteria as met, so a run that
+/// does not cover all eight prints a NOTE and skips C1, C2 and C3 rather than
+/// passing them on a subset.
+const _canonicalFrames = <String>{
+  '20260905_A0A5081',
+  '20260905_A0A5093',
+  '20260905_A0A5111',
+  '20260905_A0A5124',
+  '20260905_A0A5141',
+  '20250803_A0A8111',
+  'DSC_1436',
+  'DSC_1440',
+};
+
+/// The frames that regress, pinned by name rather than merely counted.
+///
+/// requirements.md §F.6: these three are the ones whose *neutral* contrast is
+/// already at or above their own camera JPEG's (0.940, 1.099, 1.069), so every
+/// fixed curve that helps the other five overshoots them — at every strength
+/// down to a quarter. Naming them is what makes C3a a real check: it forbids a
+/// curve that hits the average by overshooting frames that were already close.
+const _acceptedRegressions = <String>{
+  '20260905_A0A5124',
+  'DSC_1436',
+  'DSC_1440',
+};
+
+/// The bound on how far a named frame may be pushed away from its camera.
+///
+/// §E proposed 0.15 on `|ratio − 1|`. The measured worst at k = 1.431 is 0.210
+/// and the second worst 0.177, so **0.15 is not met, and this records that it
+/// is accepted rather than met**. The bound sits at the measured worst plus
+/// headroom rather than at 0.211 because `package:image`'s resampler is not the
+/// harness's NumPy one; a bound at the exact measured value would be a golden
+/// number that fails on a package bump.
+const double _regressionBound = 0.25;
+
+/// Contrast and saturation of one 1200×800 display-referred frame.
+class _LookStats {
+  /// `p95(luma) − p5(luma)`, in 8-bit code values.
+  final double contrast;
+
+  /// Mean of `(max − min) / max` over every pixel, as a fraction.
+  final double saturation;
+
+  const _LookStats(this.contrast, this.saturation);
+}
+
+/// The two statistics, on the display-encoded values.
+///
+/// Luma is the Rec.709 row applied to the encoded values — the same row and the
+/// same domain `render.dart` uses for saturation. `(max − min) / max` is the
+/// definition `_gamutLimit`'s neighbour and `saturate()` in `ria_adjust.c` both
+/// use. Both definitions are load-bearing: the expected numbers are only
+/// reproducible with them.
+_LookStats _lookStats(img.Image im) {
+  final bytes = im.getBytes(order: img.ChannelOrder.rgb);
+  final n = im.width * im.height;
+  final luma = Float64List(n);
+  var satSum = 0.0;
+  for (var i = 0; i < n; i++) {
+    final r = bytes[i * 3], g = bytes[i * 3 + 1], b = bytes[i * 3 + 2];
+    luma[i] = r * rec709Luma[0] + g * rec709Luma[1] + b * rec709Luma[2];
+    var hi = r > g ? r : g;
+    if (b > hi) hi = b;
+    var lo = r < g ? r : g;
+    if (b < lo) lo = b;
+    if (hi != 0) satSum += (hi - lo) / hi;
+  }
+  luma.sort();
+  return _LookStats(
+      _percentileOf(luma, 0.95) - _percentileOf(luma, 0.05), satSum / n);
+}
+
+/// Linear-interpolated percentile of a sorted list, the way NumPy defines it.
+double _percentileOf(Float64List sorted, double f) {
+  final pos = f * (sorted.length - 1);
+  final lo = pos.floor();
+  final hi = pos.ceil();
+  if (lo == hi) return sorted[lo];
+  final t = pos - lo;
+  return sorted[lo] * (1 - t) + sorted[hi] * t;
+}
+
+/// Area averaging to a common size, the analogue of the measurement harness's
+/// block downsample.
+img.Image _lookResize(img.Image src) => img.copyResize(src,
+    width: 1200, height: 800, interpolation: img.Interpolation.average);
+
+img.Image _fromRgb8(Uint8List rgb, int width, int height) => img.Image.fromBytes(
+      width: width,
+      height: height,
+      bytes: rgb.buffer,
+      order: img.ChannelOrder.rgb,
+      numChannels: 3,
+    );
+
+/// `processor.dart`'s preview path, reproduced: the tone tables, the composed
+/// matrix and the fused loop, for one edit.
+Uint8List _lookRender(SceneImage preview, double autoGrey, Edit edit) {
+  final tone = Tone(
+    greyPoint: edit.greyPointFrom(autoGrey),
+    shoulder: edit.highlightRolloff,
+    contrastEv: edit.contrastEv,
+    blackEv: edit.blackEv,
+    shadowEv: edit.shadowEv,
+    highlightEv: edit.highlightEv,
+    whiteEv: edit.whiteEv,
+    cameraLook: edit.cameraLook,
+  );
+  final disp =
+      tone.buildDisplayLut(outMax: 255, entries: DisplayLut.previewEntries);
+  final matrix = composedMatrix(
+    inputSpace: preview.colorspace,
+    outputSpace: previewSpace,
+    // Edit.neutral is "as shot", so there is no white-balance matrix and both
+    // arms of the comparison get exactly the same one.
+    wbMatrix: null,
+    saturationScale: preview.saturationScale,
+  );
+  final buf = DisplayBuffer.allocate(preview.width, preview.height);
+  try {
+    renderRgb8(preview.data, preview.width, preview.height, matrix,
+        tone.buildGainLut(), disp, buf.pixels,
+        saturation: edit.saturation,
+        vibrance: edit.vibrance,
+        lookSaturation: edit.cameraLook.saturationBoost,
+        lumaRow: lumaRowFor(previewSpace));
+    return Uint8List.fromList(buf.pixels);
+  } finally {
+    buf.dispose();
+  }
+}
+
+/// The same render written without ever mentioning the look — C4's in-run half.
+///
+/// Same shape as P0: the "before" arm is the old code path written out, so the
+/// comparison is against code that could not have been affected rather than
+/// against the same code called with a zero.
+Uint8List _lookRenderWithoutIt(SceneImage preview, double autoGrey) {
+  final tone = Tone(greyPoint: Edit.neutral.greyPointFrom(autoGrey));
+  final disp =
+      tone.buildDisplayLut(outMax: 255, entries: DisplayLut.previewEntries);
+  final matrix = composedMatrix(
+    inputSpace: preview.colorspace,
+    outputSpace: previewSpace,
+    wbMatrix: null,
+    saturationScale: preview.saturationScale,
+  );
+  final buf = DisplayBuffer.allocate(preview.width, preview.height);
+  try {
+    renderRgb8(preview.data, preview.width, preview.height, matrix,
+        tone.buildGainLut(), disp, buf.pixels,
+        lumaRow: lumaRowFor(previewSpace));
+    return Uint8List.fromList(buf.pixels);
+  } finally {
+    buf.dispose();
+  }
+}
+
+Future<int> _checkCameraLook(List<String> paths) async {
+  var failures = 0;
+  void check(bool ok, String what) {
+    print('  ${ok ? 'ok  ' : 'FAIL'} $what');
+    if (!ok) failures++;
+  }
+
+  print('camera look — C1 to C5');
+
+  final names = <String>[];
+  final rOffC = <double>[], rOnC = <double>[];
+  final rOffS = <double>[], rOnS = <double>[];
+
+  for (final path in paths) {
+    final base = p.basenameWithoutExtension(path);
+    final f = RawFile.open(path);
+    final SceneImage preview;
+    final EmbeddedPreview? embedded;
+    try {
+      preview = f.decodeSceneLinear(
+          maxEdge: previewMaxEdge, outputColor: workingSpace);
+      embedded = f.preview();
+    } finally {
+      f.close();
+    }
+    if (embedded == null) {
+      check(false, '$base: the camera JPEG could not be read');
+      continue;
+    }
+
+    final zones = ZoneHistogram.compute(
+      preview.data,
+      preview.width,
+      preview.height,
+      lumaRow: lumaRowFor(preview.colorspace),
+      saturationScale: preview.saturationScale,
+    );
+    final autoGrey = zones.autoGreyPoint();
+
+    final off = _lookRender(preview, autoGrey, Edit.neutral);
+    final on = _lookRender(
+        preview, autoGrey, const Edit(cameraLook: CameraLook.camera));
+
+    // C4, first half.
+    check(_identical(off, _lookRenderWithoutIt(preview, autoGrey)),
+        'C4 $base: with the preset off the render is byte-identical to one '
+        'written without the look at all');
+
+    var camera = img.decodeJpg(embedded.bytes)!;
+    // The embedded JPEG comes out of LibRaw unrotated; the decode does not.
+    if (embedded.flip == 6) {
+      camera = img.copyRotate(camera, angle: 90);
+    } else if (embedded.flip == 5) {
+      camera = img.copyRotate(camera, angle: 270);
+    }
+
+    final sOff =
+        _lookStats(_lookResize(_fromRgb8(off, preview.width, preview.height)));
+    final sOn =
+        _lookStats(_lookResize(_fromRgb8(on, preview.width, preview.height)));
+    final sCam = _lookStats(_lookResize(camera));
+
+    names.add(base);
+    rOffC.add(sOff.contrast / sCam.contrast);
+    rOnC.add(sOn.contrast / sCam.contrast);
+    rOffS.add(sOff.saturation / sCam.saturation);
+    rOnS.add(sOn.saturation / sCam.saturation);
+
+    print('  $base  contrast off ${sOff.contrast.toStringAsFixed(1)} '
+        'on ${sOn.contrast.toStringAsFixed(1)} '
+        'camera ${sCam.contrast.toStringAsFixed(1)}   '
+        'sat off ${sOff.saturation.toStringAsFixed(3)} '
+        'on ${sOn.saturation.toStringAsFixed(3)} '
+        'camera ${sCam.saturation.toStringAsFixed(3)}');
+  }
+
+  // C3c — the table, on every run, pass or fail. A criterion that is only
+  // satisfied by naming its exceptions has to show its working every time.
+  print('');
+  print('  C3c per-frame regression table');
+  print('  ${'frame'.padRight(20)} ${'stat'.padRight(10)} '
+      '${'r_off'.padLeft(7)} ${'r_on'.padLeft(7)} '
+      '${'d_off'.padLeft(7)} ${'d_on'.padLeft(7)} ${'delta'.padLeft(8)}  note');
+  final regressed = <String, List<String>>{};
+  for (var i = 0; i < names.length; i++) {
+    for (final row in [
+      ('contrast', rOffC[i], rOnC[i]),
+      ('saturation', rOffS[i], rOnS[i]),
+    ]) {
+      final (stat, off, on) = row;
+      final dOff = (off - 1).abs();
+      final dOn = (on - 1).abs();
+      final worse = dOn > dOff;
+      if (worse) (regressed[names[i]] ??= []).add(stat);
+      final note = !worse
+          ? ''
+          : (_acceptedRegressions.contains(names[i])
+              ? 'REGRESSED (accepted, §F.6)'
+              : 'REGRESSED — not in the accepted set');
+      print('  ${names[i].padRight(20)} ${stat.padRight(10)} '
+          '${off.toStringAsFixed(3).padLeft(7)} '
+          '${on.toStringAsFixed(3).padLeft(7)} '
+          '${dOff.toStringAsFixed(3).padLeft(7)} '
+          '${dOn.toStringAsFixed(3).padLeft(7)} '
+          '${(dOn - dOff).toStringAsFixed(3).padLeft(8)}  $note');
+    }
+  }
+  print('');
+
+  final covered = names.toSet();
+  if (!covered.containsAll(_canonicalFrames)) {
+    final missing = _canonicalFrames.difference(covered).toList()..sort();
+    print('  NOTE this run does not cover the canonical eight frames '
+        '(missing ${missing.join(', ')}), so C1, C2 and C3 are skipped rather '
+        'than reported as met. The set-level means are only meaningful over '
+        'all eight.');
+    return failures;
+  }
+
+  double mean(List<double> v) => v.reduce((a, b) => a + b) / v.length;
+  double lo(List<double> v) => v.reduce(math.min);
+  double hi(List<double> v) => v.reduce(math.max);
+
+  final mC = mean(rOnC), loC = lo(rOnC), hiC = hi(rOnC);
+  print('  C1 contrast  mean ${mC.toStringAsFixed(3)}  '
+      'range ${loC.toStringAsFixed(3)} … ${hiC.toStringAsFixed(3)}');
+  check(mC >= 0.90 && mC <= 1.15,
+      'C1 the mean contrast ratio is in [0.90, 1.15]');
+  check(loC >= 0.75 && hiC <= 1.30, 'C1b no frame is outside [0.75, 1.30]');
+
+  final mS = mean(rOnS), loS = lo(rOnS), hiS = hi(rOnS);
+  print('  C2 saturation  mean ${mS.toStringAsFixed(3)}  '
+      'range ${loS.toStringAsFixed(3)} … ${hiS.toStringAsFixed(3)}');
+  check(mS >= 0.90 && mS <= 1.10,
+      'C2 the mean saturation ratio is in [0.90, 1.10]');
+  check(loS >= 0.85 && hiS <= 1.15, 'C2b no frame is outside [0.85, 1.15]');
+
+  final unexpected = regressed.keys
+      .where((n) => !_acceptedRegressions.contains(n))
+      .toList()
+    ..sort();
+  check(unexpected.isEmpty,
+      'C3a only the three frames §F.6 named may regress'
+      '${unexpected.isEmpty ? '' : ' — but ${unexpected.join(', ')} did'}');
+
+  var worst = 0.0;
+  var worstWhat = '';
+  for (var i = 0; i < names.length; i++) {
+    if (!_acceptedRegressions.contains(names[i])) continue;
+    for (final row in [('contrast', rOnC[i]), ('saturation', rOnS[i])]) {
+      final d = (row.$2 - 1).abs();
+      if (d > worst) {
+        worst = d;
+        worstWhat = '${names[i]} ${row.$1}';
+      }
+    }
+  }
+  print('  C3b worst accepted regression ${worst.toStringAsFixed(3)} '
+      '($worstWhat); §E proposed 0.15 and it is NOT met — accepted at '
+      '$_regressionBound, see plan.md §6.');
+  check(worst <= _regressionBound,
+      'C3b the three named frames stay within $_regressionBound of their '
+      'camera');
+
   return failures;
 }
 

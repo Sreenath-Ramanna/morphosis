@@ -260,6 +260,8 @@ void main() {
       'Highlight rolloff',
       'Highlight recovery',
       'Brightness',
+      // Also not a slider: the Tone section's toggle, above Contrast.
+      'Camera look',
       'Contrast',
       'Saturation',
       'Vibrance',

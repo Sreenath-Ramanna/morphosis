@@ -167,6 +167,14 @@ class ControlsPanel extends StatelessWidget {
               note: 'Midtone placement — moves the grey point, leaving black '
                   'and white anchored.',
             ),
+            // A base curve in the gain table is a tone operation, and the
+            // panel is laid out in pipeline order: the look is composed after
+            // brightness and before the contrast slope acts on top of it.
+            _LookToggle(
+              value: edit.cameraLook != CameraLook.none,
+              onChanged: (v) => onChanged(edit.copyWith(
+                  cameraLook: v ? CameraLook.camera : CameraLook.none)),
+            ),
             AdjustSlider(
               label: 'Contrast',
               value: edit.contrastEv,
@@ -418,6 +426,54 @@ class _RecoveryToggle extends StatelessWidget {
                       'same either way.'
                   : 'Off — a channel that reached saturation stays there, '
                       'which is what a plain decode does.',
+              style: Chrome.label.copyWith(fontSize: 10, height: 1.35),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LookToggle extends StatelessWidget {
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  const _LookToggle({required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text('Camera look',
+                    style: Chrome.label.copyWith(
+                        color: value ? Chrome.text : Chrome.textDim)),
+              ),
+              SizedBox(
+                height: 22,
+                child: Switch(
+                  value: value,
+                  onChanged: onChanged,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ),
+            ],
+          ),
+          Padding(
+            padding: const EdgeInsets.only(top: 2, bottom: 4),
+            child: Text(
+              value
+                  ? 'A fixed base curve and the colour that goes with it, '
+                      'applied on top of everything above. Every slider still '
+                      'reads 0.00 and still acts relative to it.'
+                  : 'Off — the render is scene-referred and neutral, which is '
+                      'what the sliders sitting at zero means.',
               style: Chrome.label.copyWith(fontSize: 10, height: 1.35),
             ),
           ),

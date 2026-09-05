@@ -208,6 +208,10 @@ void renderRgb8(
   Uint8List dst, {
   double saturation = 0,
   double vibrance = 0,
+  /// What the camera look contributes to saturation, in the same units as
+  /// [saturation]. Zero when no look is on, and then the arithmetic below is
+  /// bit-for-bit what it was.
+  double lookSaturation = 0,
   List<double> lumaRow = rec709Luma,
 }) {
   final table = disp.asBytes;
@@ -226,9 +230,22 @@ void renderRgb8(
   // Hoisted for correctness, not for speed: `y + (c − y) × 1.0` is not
   // bit-exactly `c`, so at zero the arithmetic has to be skipped rather than
   // passed through, or the neutral render moves by a code value.
-  final hasColour = saturation != 0 || vibrance != 0;
+  final hasColour = saturation != 0 || vibrance != 0 || lookSaturation != 0;
   final hasVibrance = vibrance != 0;
-  final satFactor = 1 + saturation / saturationRange;
+  // The look and the slider compose by multiplying their factors, exactly as
+  // vibrance already composes with saturation twenty lines below. Two
+  // consequences, and both are why: the slider does the same thing whether the
+  // preset is on or off (+10 is always ×1.2 on the distance from luma), and
+  // its endpoints keep their meaning — −50 is exactly greyscale either way,
+  // where adding the two control values would leave it at ×0.4 and make a
+  // monochrome conversion unreachable with the preset on. render_test's L14.
+  //
+  // `1 + 0/50` is exactly 1.0 and `1.0 × x` is exactly `x`, so with the look
+  // off `satFactor` is the identical double and `hasColour` selects the
+  // identical branch. One factor reaches `_gamutLimit`, not two — the limiter
+  // is consulted once, whether or not a look is on.
+  final lookFactor = 1 + lookSaturation / saturationRange;
+  final satFactor = lookFactor * (1 + saturation / saturationRange);
   final vibFactor = vibrance / vibranceRange;
 
   final n = width * height;
@@ -350,6 +367,10 @@ void renderRgb16(
   Uint16List dst, {
   double saturation = 0,
   double vibrance = 0,
+  /// What the camera look contributes to saturation, in the same units as
+  /// [saturation]. Zero when no look is on, and then the arithmetic below is
+  /// bit-for-bit what it was.
+  double lookSaturation = 0,
   List<double> lumaRow = rec709Luma,
 }) {
   final table = disp.asWords;
@@ -365,9 +386,12 @@ void renderRgb16(
 
   final lumaR = lumaRow[0], lumaG = lumaRow[1], lumaB = lumaRow[2];
 
-  final hasColour = saturation != 0 || vibrance != 0;
+  final hasColour = saturation != 0 || vibrance != 0 || lookSaturation != 0;
   final hasVibrance = vibrance != 0;
-  final satFactor = 1 + saturation / saturationRange;
+  // Multiplicative, and exactly the identity when the look is off; see the
+  // note in renderRgb8.
+  final lookFactor = 1 + lookSaturation / saturationRange;
+  final satFactor = lookFactor * (1 + saturation / saturationRange);
   final vibFactor = vibrance / vibranceRange;
 
   final n = width * height;

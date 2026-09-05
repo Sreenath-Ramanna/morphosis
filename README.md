@@ -271,6 +271,7 @@ the test approach.md §11 specifies for catching it.
 | Colour temperature | scene | per-channel scale in camera space, as a 3×3 on the decoded frame |
 | Black / Shadow / Highlight / White | scene | zone EV, applied as a luminance-preserving gain |
 | Brightness | display | the transform's grey point — a midtone placement |
+| Camera look | scene → display | an opt-in fixed base curve in the gain table, plus saturation +20 — every slider stays at zero |
 | Contrast | scene | slope `2^(c/3)` about the midtone, on luminance only |
 | Saturation | display | distance from luma × (1 + s/50), limited per pixel so no channel leaves range |
 | Vibrance | display | the same, weighted by 1 − how saturated the pixel already is |
@@ -285,7 +286,12 @@ Contrast acts on luminance, not per channel, so hue never moves. That is the
 predictable choice and it costs some apparent colourfulness; the remedy, if
 you want it, is Saturation, in the Colour section — a separate control, on
 purpose, so that restoring colourfulness is something you ask for rather than
-something the contrast slider does behind you.
+something the contrast slider does behind you. Camera look is those two
+together with the values chosen rather than dragged: a fixed base curve —
+`srgbDecode(dcrawEncode(1.431·v))`, LibRaw's own output curve re-expressed as a
+remap of linear light — composed into the gain table after everything else, and
+the saturation lift of +20 that goes with it. The sliders still read 0.00 and
+still act relative to it.
 
 ### Deviation 1 — the zone controls are anchored to display white
 

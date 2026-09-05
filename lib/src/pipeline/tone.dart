@@ -11,6 +11,8 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import '../model/edit.dart' show CameraLook;
+
 /// Photographic middle grey, and the anchor `ria_display_transform` uses.
 const double middleGrey = 0.18;
 
@@ -90,6 +92,9 @@ class Tone {
   final double highlightEv;
   final double whiteEv;
 
+  /// The opt-in look, composed into the gain table after everything above.
+  final CameraLook cameraLook;
+
   Tone({
     required this.greyPoint,
     this.whitePoint = 1.0,
@@ -99,6 +104,7 @@ class Tone {
     this.shadowEv = 0,
     this.highlightEv = 0,
     this.whiteEv = 0,
+    this.cameraLook = CameraLook.none,
   });
 
   /// How far display white sits below sensor saturation, in EV. Everything
@@ -121,7 +127,17 @@ class Tone {
 
   List<double> get zoneEv => [blackEv, shadowEv, highlightEv, whiteEv];
 
+  /// The factor that turns scene-linear luminance into display-referred
+  /// luminance, where 1.0 is display white.
+  ///
+  /// One getter, used by both tables: the base curve is defined against display
+  /// white and so is [buildDisplayLut]'s shoulder, and if the two ever
+  /// disagreed about where white is, the preset would target a different white
+  /// from the transform that follows it.
+  double get displayScale => middleGrey / greyPoint;
+
   bool get isIdentityTone =>
+      cameraLook.isNone &&
       contrastEv == 0 &&
       blackEv == 0 &&
       shadowEv == 0 &&
@@ -280,9 +296,16 @@ class Tone {
     final slope = contrastSlope;
     final p = _log2(pivot);
     final w = Float64List(4);
+    final scale = displayScale;
 
     final anyZone = z.any((v) => v != 0);
-    if (!anyZone && slope == 1.0) {
+    final hasLook = !cameraLook.isNone;
+    // The fast path has to know about the look. `!anyZone && slope == 1.0` is
+    // *exactly* the state of a neutral edit with the preset on, so without this
+    // clause the table comes back all ones, the preset does nothing at all, and
+    // every test that checks the table's shape still passes. tone_test's L8 is
+    // the test that fails if this is ever undone.
+    if (!anyZone && slope == 1.0 && !hasLook) {
       for (var i = 0; i < gainEntries; i++) {
         lut[i] = 1.0;
       }
@@ -305,7 +328,22 @@ class Tone {
         }
       }
       final e2 = p + slope * (e1 - p);
-      lut[i] = math.pow(2.0, e2 - e).toDouble();
+      var gain = math.pow(2.0, e2 - e).toDouble();
+      if (hasLook) {
+        // Last in the chain — zones, then contrast, then the base curve — so
+        // the user's own settings compose on top of the preset rather than
+        // being reinterpreted by it. That is what "the sliders still act
+        // relative to the preset" means in code.
+        //
+        // In linear rather than in EV: multiplying the gain by base(v)/v is
+        // exact and costs no log/exp, and it is the same answer as adding a
+        // term to e2.
+        final vIn = y * gain * scale;
+        if (vIn > 0) gain *= cameraLookCurve(vIn, cameraLook.gain) / vIn;
+      }
+      // With the look off this is the same `double` the expression above
+      // produced on its own, so the neutral table is bit-for-bit what it was.
+      lut[i] = gain;
     }
     return lut;
   }
@@ -324,7 +362,7 @@ class Tone {
     final bytes = wide ? null : Uint8List(entries + 1);
     final words = wide ? Uint16List(entries + 1) : null;
 
-    final scale = middleGrey / greyPoint;
+    final scale = displayScale;
     final w = whitePoint * scale;
 
     for (var i = 0; i <= entries; i++) {
@@ -410,6 +448,104 @@ double srgbDecode(double v) {
       ? v / 12.92
       : math.pow((v + 0.055) / 1.055, 2.4).toDouble();
 }
+
+/// LibRaw's output curve — dcraw's `gamma_curve`, a power function with a
+/// linear toe whose breakpoint is solved by bisection so that the two segments
+/// meet with a continuous slope.
+///
+/// A port of `gamma_curve_init` / `gamma_curve_encode` in
+/// `raw_images_api/src/ria_display.c:32`, bisection count and all, rather than
+/// an approximation. That file gives the reason and it is the same one here:
+/// the whole provenance of the camera look is "it reproduces a plain LibRaw
+/// decode", and a close-but-not-equal curve would show up as a systematic
+/// few-code-value drift that looks like a bug in whatever is being compared.
+///
+/// It is *not* bound over FFI. `ria_apply_display_transform` exists in C but is
+/// on no Morphosis code path and is not among the symbols `bindings.dart` looks
+/// up; binding it would mean mirroring the curve by hand across a repository
+/// boundary for a code path nothing executes. `tone_test.dart`'s L2 is what
+/// keeps the port honest instead — it checks the solved constants against
+/// Rec.709's published ones.
+class DcrawCurve {
+  /// dcraw's six coefficients, under their own names.
+  ///
+  /// `_g0` is the **reciprocal** power — the C does `g[0] = 1.0 / power`, so
+  /// 2.222 is held as 0.45 — `_g1` is the toe slope, `_g2` the solved
+  /// bisection value, `_g3` the breakpoint in linear and `_g4` the offset that
+  /// makes the power segment meet the toe.
+  final double _g0, _g1, _g2, _g3, _g4;
+
+  const DcrawCurve._(this._g0, this._g1, this._g2, this._g3, this._g4);
+
+  /// Solve the curve. Takes the power the way LibRaw states it — 2.222, not
+  /// 0.45 — and takes the reciprocal internally, exactly as the C does.
+  factory DcrawCurve(double power, double slope) {
+    final g0 = power > 0.0 ? 1.0 / power : 0.0;
+    final g1 = slope;
+    var g2 = 0.0, g3 = 0.0, g4 = 0.0;
+    final bnd = <double>[0.0, 0.0];
+    bnd[g1 >= 1.0 ? 1 : 0] = 1.0;
+    if (g1 != 0.0 && (g1 - 1.0) * (g0 - 1.0) <= 0.0) {
+      // 48 iterations is dcraw's own count, and takes the breakpoint well past
+      // double precision. Iterating to a tolerance instead would converge
+      // somewhere else in the last few bits, which is exactly the drift the
+      // class comment is about.
+      for (var i = 0; i < 48; i++) {
+        g2 = (bnd[0] + bnd[1]) / 2.0;
+        if (g0 != 0.0) {
+          bnd[(math.pow(g2 / g1, -g0) - 1.0) / g0 - 1.0 / g2 > -1.0 ? 1 : 0] =
+              g2;
+        } else {
+          bnd[g2 / math.exp(1.0 - 1.0 / g2) < g1 ? 1 : 0] = g2;
+        }
+      }
+      g3 = g2 / g1;
+      if (g0 != 0.0) g4 = g2 * (1.0 / g0 - 1.0);
+    }
+    return DcrawCurve._(g0, g1, g2, g3, g4);
+  }
+
+  /// Linear → encoded.
+  double encode(double r) {
+    if (r <= 0.0) return 0.0;
+    if (r >= 1.0) return 1.0;
+    if (r < _g3) return r * _g1;
+    if (_g0 != 0.0) return math.pow(r, _g0).toDouble() * (1.0 + _g4) - _g4;
+    return math.log(r) * _g2 + 1.0;
+  }
+
+  /// The linear value where the toe ends. 0.018050 for (2.222, 4.5).
+  double get breakpoint => _g3;
+
+  /// The reciprocal power the power segment is raised to. 0.45 for 2.222.
+  double get power => _g0;
+
+  /// The toe slope, as passed in.
+  double get toeSlope => _g1;
+
+  /// The offset that makes the power segment meet the toe: the solved
+  /// analogue of Rec.709's published 0.099.
+  double get offset => _g4;
+}
+
+/// The one instance, solved once. LibRaw's default, and the curve
+/// `ria_display.c` initialises.
+final DcrawCurve dcrawCurve = DcrawCurve(2.222, 4.5);
+
+/// The camera look's base curve, on display-referred linear luminance —
+/// `v = 1.0` is display white.
+///
+/// `base(v) = srgbDecode(dcrawEncode(k * v))`: re-express LibRaw's own output
+/// curve as a remap of linear light, so it composes into the gain table and
+/// [srgbEncode] is left exactly as it is. That is what keeps the shipped ICC
+/// profiles honest — `icc.dart` samples [srgbDecode] directly, and
+/// `icc_test.dart`'s I4 asserts the profiles' TRC *is* that curve.
+///
+/// Bounded above by 1 for every `v >= 1 / k`, which is the design and not an
+/// accident: a plain LibRaw decode clips there, and reproducing a clipping
+/// decode is what the look is for.
+double cameraLookCurve(double v, double gain) =>
+    srgbDecode(dcrawCurve.encode(v * gain));
 
 const double _ln2 = 0.6931471805599453;
 

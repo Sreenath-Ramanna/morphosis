@@ -498,6 +498,91 @@ void main() {
     });
   });
 
+  group('camera look', () {
+    final src = _colourFrame();
+    final n = _patches.length;
+
+    Uint8List render8(
+            {double saturation = 0, double lookSaturation = 0,
+            Float64List? matrix}) {
+      final t = Tone(greyPoint: _greyPoint);
+      final dst = Uint8List(n * 3);
+      renderRgb8(
+          src,
+          n,
+          1,
+          matrix,
+          t.buildGainLut(),
+          t.buildDisplayLut(outMax: 255, entries: DisplayLut.previewEntries),
+          dst,
+          saturation: saturation,
+          lookSaturation: lookSaturation);
+      return dst;
+    }
+
+    Uint16List render16({double saturation = 0, double lookSaturation = 0}) {
+      final t = Tone(greyPoint: _greyPoint);
+      final dst = Uint16List(n * 3);
+      renderRgb16(
+          src,
+          n,
+          1,
+          null,
+          t.buildGainLut(),
+          t.buildDisplayLut(outMax: 65535, entries: DisplayLut.exportEntries),
+          dst,
+          saturation: saturation,
+          lookSaturation: lookSaturation);
+      return dst;
+    }
+
+    test('L12 lookSaturation 0 is byte-exact against a render that never '
+        'mentions it', () {
+      // The exact twin of the saturation case above, and for the same reason:
+      // `y + (c − y) × 1.0` is not bit-exactly `c`, so at zero the arithmetic
+      // has to be skipped rather than passed through.
+      final matrix = Float64List.fromList(
+          [1.04, 0.02, -0.01, 0.01, 0.99, 0.02, -0.02, 0.03, 1.08]);
+      for (final m in <Float64List?>[null, matrix]) {
+        expect(render8(lookSaturation: 0, matrix: m), render8(matrix: m),
+            reason: 'lookSaturation 0 must be the same lookups and the same '
+                'writes as a render that has never heard of it');
+      }
+      expect(render16(lookSaturation: 0), render16());
+    });
+
+    test('L13 the look\'s colour and the slider compose multiplicatively', () {
+      // At slider zero the look *is* +20, which is what the measurement said.
+      expect(render8(lookSaturation: 20, saturation: 0),
+          render8(lookSaturation: 0, saturation: 20));
+
+      // And the composition itself, stated as an equality against the existing
+      // one-factor path, so the gamut limiter is exercised identically in both.
+      for (final s in [-50.0, -25.0, 25.0, 50.0]) {
+        final combined =
+            saturationRange * ((1 + 20 / saturationRange) *
+                (1 + s / saturationRange) - 1);
+        expect(render8(lookSaturation: 20, saturation: s),
+            render8(lookSaturation: 0, saturation: combined),
+            reason: 'slider $s composes to $combined');
+      }
+    });
+
+    test('L14 −50 is greyscale whether the look is on or off', () {
+      // The property that decides the composition. Under an *additive* one the
+      // effective value would be −30, the factor 0.4, and a monochrome
+      // conversion would be unreachable with the preset on — the slider's
+      // endpoint would silently change meaning.
+      final grey =
+          render8(lookSaturation: 20, saturation: -saturationRange);
+      for (var i = 0; i < n; i++) {
+        expect(grey[i * 3], grey[i * 3 + 1], reason: 'patch $i');
+        expect(grey[i * 3 + 1], grey[i * 3 + 2], reason: 'patch $i');
+      }
+      expect(grey, render8(saturation: -saturationRange));
+    });
+  });
+
   group('zone histogram', () {
     test('finds the percentile of a known ramp', () {
       const n = 4096;

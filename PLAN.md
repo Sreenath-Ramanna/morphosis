@@ -282,6 +282,7 @@ open a newer catalogue is better than one silently misreading it.
   "blackEv": -0.6, "shadowEv": 1.4, "highlightEv": -0.9, "whiteEv": 0.4,
   "brightnessEv": 0.3, "contrastEv": 0.7,
   "sharpness": 0.6, "highlightRolloff": true, "highlightRecovery": true,
+  "cameraLook": "camera",
   "geometry": {
     "quarterTurns": 1, "straightenDegrees": 4.0,
     "crop": [0.15, 0.1, 0.85, 0.7], "aspect": "3:2"
@@ -299,7 +300,9 @@ that cannot be read back.
 **Absent means default, never zero.** A field added in v2 will be missing from
 every v1 document. `fromJson` fills from `Edit`'s own defaults, so an old
 document reads as an old edit rather than as one with a black point of zero
-that the photographer never chose.
+that the photographer never chose. `highlightRecovery` and `cameraLook` are the
+two fields this rule has actually carried; neither needed a version bump, and a
+document written before either still renders as it did.
 
 **Only what the photographer chose.** No derived values — not the automatic
 grey point, not the render time, not the preview size. Those are properties of

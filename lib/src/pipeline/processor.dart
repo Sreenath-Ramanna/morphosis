@@ -405,7 +405,9 @@ class _Worker {
 
     renderRgb8(scene.data, scene.width, scene.height, matrix, gainLut, disp,
         buf.pixels, saturation: edit.saturation,
-        vibrance: edit.vibrance, lumaRow: lumaRowFor(previewSpace));
+        vibrance: edit.vibrance,
+        lookSaturation: edit.cameraLook.saturationBoost,
+        lumaRow: lumaRowFor(previewSpace));
 
     if (edit.sharpness > 0) {
       buf.unsharpMask(_previewSigma, edit.sharpness, _sharpenThreshold);
@@ -478,6 +480,7 @@ Tone _toneFor(Edit edit, double autoGrey) => Tone(
       shadowEv: edit.shadowEv,
       highlightEv: edit.highlightEv,
       whiteEv: edit.whiteEv,
+      cameraLook: edit.cameraLook,
     );
 
 /// The one matrix the render loop applies, shared by preview and export.
@@ -616,7 +619,9 @@ Future<String> runExport(ExportRequest req) async {
     final out = Uint16List(scene.width * scene.height * 3);
     renderRgb16(scene.data, scene.width, scene.height, matrix, gainLut, disp,
         out, saturation: req.edit.saturation,
-        vibrance: req.edit.vibrance, lumaRow: lumaRow);
+        vibrance: req.edit.vibrance,
+        lookSaturation: req.edit.cameraLook.saturationBoost,
+        lumaRow: lumaRow);
     // Sharpening runs through the C path, which needs the pixels in native
     // memory; 16-bit RGB has no RGBA wrapper here, so a TIFF is sharpened by
     // wrapping the same buffer as RGB16.
@@ -633,7 +638,9 @@ Future<String> runExport(ExportRequest req) async {
     try {
       renderRgb8(scene.data, scene.width, scene.height, matrix, gainLut, disp,
           buf.pixels, saturation: req.edit.saturation,
-        vibrance: req.edit.vibrance, lumaRow: lumaRow);
+        vibrance: req.edit.vibrance,
+        lookSaturation: req.edit.cameraLook.saturationBoost,
+        lumaRow: lumaRow);
       if (req.edit.sharpness > 0) {
         buf.unsharpMask(sigma, req.edit.sharpness, _sharpenThreshold);
       }
