@@ -63,7 +63,7 @@ Check, in this order:
   1. Struct layouts:  ria_image, ria_decode_options, ria_metadata,
      ria_color_data, ria_histogram, ria_preview
   2. Enum values:     ria_status, ria_pixel_format, ria_transfer,
-     ria_resize_filter, ria_demosaic
+     ria_resize_filter, ria_demosaic, ria_colorspace
   3. New RIA_API exports needing a lookupFunction entry, and the wrapper in
      lib/src/ria/ria.dart
 
@@ -85,6 +85,7 @@ ENUM_MAP=(
     "ria_transfer:RiaTransfer"
     "ria_resize_filter:RiaResizeFilter"
     "ria_demosaic:RiaDemosaic"
+    "ria_colorspace:RiaColorspace"
 )
 
 # Same comment handling as digest(): the ABI is what matters, not the prose.

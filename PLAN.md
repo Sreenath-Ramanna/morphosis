@@ -281,7 +281,7 @@ open a newer catalogue is better than one silently misreading it.
   "temperatureK": 6400.0,
   "blackEv": -0.6, "shadowEv": 1.4, "highlightEv": -0.9, "whiteEv": 0.4,
   "brightnessEv": 0.3, "contrastEv": 0.7,
-  "sharpness": 0.6, "highlightRolloff": true,
+  "sharpness": 0.6, "highlightRolloff": true, "highlightRecovery": true,
   "geometry": {
     "quarterTurns": 1, "straightenDegrees": 4.0,
     "crop": [0.15, 0.1, 0.85, 0.7], "aspect": "3:2"

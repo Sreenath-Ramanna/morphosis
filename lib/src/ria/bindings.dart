@@ -60,6 +60,18 @@ abstract final class RiaDemosaic {
   static const int aahd = 12;
 }
 
+/// `ria_colorspace`. Passed as a plain int; scripts/check-ffi.sh --enums is
+/// the only thing that checks these against the header.
+abstract final class RiaColorspace {
+  static const int raw = 0;
+  static const int srgb = 1;
+  static const int adobe = 2;
+  static const int wide = 3;
+  static const int prophoto = 4;
+  static const int xyz = 5;
+  static const int aces = 6;
+}
+
 /// LibRaw orientation codes, as carried on `ria_image.pending_flip`.
 abstract final class RiaFlip {
   static const int none = 0;
@@ -100,6 +112,13 @@ final class RiaImage extends Struct {
   external double transferSlope;
   @Int32()
   external int colorspace;
+
+  /// `ria_image.saturation_level`, appended in C after `colorspace` and last
+  /// in the struct. Dart never allocates an `RiaImage` — it only reads one
+  /// through a pointer C returned — so this mirror grows in the one direction
+  /// that is safe.
+  @Float()
+  external double saturationLevel;
 }
 
 final class RiaDecodeOptions extends Struct {
@@ -298,6 +317,9 @@ typedef _HistogramNative = Int32 Function(
     Pointer<RiaImage>, Pointer<RiaHistogram>);
 typedef HistogramFn = int Function(Pointer<RiaImage>, Pointer<RiaHistogram>);
 
+typedef _ColorspaceFromSrgbNative = Int32 Function(Int32, Pointer<Float>);
+typedef ColorspaceFromSrgbFn = int Function(int, Pointer<Float>);
+
 typedef _IsRawExtNative = Int32 Function(Pointer<Utf8>);
 typedef IsRawExtFn = int Function(Pointer<Utf8>);
 
@@ -328,6 +350,7 @@ class RiaLib {
   late final FitWithinFn fitWithin;
   late final UnsharpFn unsharpMask;
   late final HistogramFn computeHistogram;
+  late final ColorspaceFromSrgbFn colorspaceFromSrgb;
   late final IsRawExtFn isRawExtension;
   late final SupportedExtFn supportedExtensions;
 
@@ -364,6 +387,9 @@ class RiaLib {
         _lib.lookupFunction<_UnsharpNative, UnsharpFn>('ria_unsharp_mask');
     computeHistogram = _lib
         .lookupFunction<_HistogramNative, HistogramFn>('ria_compute_histogram');
+    colorspaceFromSrgb =
+        _lib.lookupFunction<_ColorspaceFromSrgbNative, ColorspaceFromSrgbFn>(
+            'ria_colorspace_from_srgb');
     isRawExtension = _lib
         .lookupFunction<_IsRawExtNative, IsRawExtFn>('ria_is_raw_extension');
     supportedExtensions =

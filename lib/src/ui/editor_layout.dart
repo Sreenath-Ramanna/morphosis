@@ -41,6 +41,11 @@ class EditorViewState {
   final Edit edit;
   final double softLimitFactor;
 
+  /// The median of the buffer the last render was made from. Fed from
+  /// `RenderResult`, not from `FrameInfo`, because highlight recovery
+  /// re-decodes and the number would otherwise be frozen at open time.
+  final double medianEv;
+
   /// Which right-hand tab is open. The canvas reads it too: crop mode shows
   /// the whole straightened frame with a rectangle over it, and switches pan
   /// and zoom off.
@@ -74,6 +79,7 @@ class EditorViewState {
     this.histogram,
     this.edit = Edit.neutral,
     this.softLimitFactor = 1.0,
+    this.medianEv = 0.0,
     this.tab = EditorTab.colour,
     this.loading = false,
     this.exporting = false,
@@ -290,6 +296,7 @@ class EditorLayout extends StatelessWidget {
           edit: state.edit,
           histogram: state.histogram,
           softLimitFactor: state.softLimitFactor,
+          medianEv: state.medianEv,
           onChanged: onEditChanged,
         );
         final restored = state.restoredFrom;

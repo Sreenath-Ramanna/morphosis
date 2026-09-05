@@ -25,6 +25,12 @@ class ControlsPanel extends StatelessWidget {
   final Edit edit;
   final Histogram? histogram;
   final double softLimitFactor;
+
+  /// The median of the buffer the last render was made from. From the render,
+  /// not from `FrameInfo`: highlight recovery re-decodes, and a readout frozen
+  /// at open time could not show that the number does not move.
+  final double medianEv;
+
   final ValueChanged<Edit> onChanged;
 
   const ControlsPanel({
@@ -33,6 +39,7 @@ class ControlsPanel extends StatelessWidget {
     required this.edit,
     required this.histogram,
     required this.softLimitFactor,
+    required this.medianEv,
     required this.onChanged,
   });
 
@@ -60,7 +67,7 @@ class ControlsPanel extends StatelessWidget {
       key: ValueKey(f.path),
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 24),
       children: [
-        _Identity(frame: f),
+        _Identity(frame: f, medianEv: medianEv),
         const SizedBox(height: 14),
         if (hist != null)
           HistogramView(histogram: hist)
@@ -138,6 +145,10 @@ class ControlsPanel extends StatelessWidget {
             _RolloffToggle(
               value: edit.highlightRolloff,
               onChanged: (v) => onChanged(edit.copyWith(highlightRolloff: v)),
+            ),
+            _RecoveryToggle(
+              value: edit.highlightRecovery,
+              onChanged: (v) => onChanged(edit.copyWith(highlightRecovery: v)),
             ),
           ],
         ),
@@ -290,8 +301,9 @@ class ControlsPanel extends StatelessWidget {
 
 class _Identity extends StatelessWidget {
   final FrameInfo frame;
+  final double medianEv;
 
-  const _Identity({required this.frame});
+  const _Identity({required this.frame, required this.medianEv});
 
   @override
   Widget build(BuildContext context) {
@@ -315,7 +327,7 @@ class _Identity extends StatelessWidget {
         ),
         const SizedBox(height: 2),
         Text(
-          'scene median ${frame.medianEv.toStringAsFixed(2)} EV below '
+          'scene median ${medianEv.toStringAsFixed(2)} EV below '
           'saturation',
           style: Chrome.label.copyWith(fontSize: 10),
         ),
@@ -353,6 +365,60 @@ class _SoftLimitNote extends StatelessWidget {
               'apart the tone curve folds over and the image solarises.',
               style: Chrome.label.copyWith(
                   fontSize: 10, color: Chrome.warn, height: 1.35),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Highlight recovery.
+///
+/// Copied from [_RolloffToggle] deliberately: to the user these are two
+/// switches in the same section, and they should look and behave alike even
+/// though one is a display curve and the other re-decodes the file.
+class _RecoveryToggle extends StatelessWidget {
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  const _RecoveryToggle({required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text('Highlight recovery',
+                    style: Chrome.label.copyWith(
+                        color: value ? Chrome.text : Chrome.textDim)),
+              ),
+              SizedBox(
+                height: 22,
+                child: Switch(
+                  value: value,
+                  onChanged: onChanged,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ),
+            ],
+          ),
+          Padding(
+            padding: const EdgeInsets.only(top: 2, bottom: 4),
+            child: Text(
+              value
+                  ? 'Clipped highlights are reconstructed from the channels '
+                      'that did not clip. The frame is re-decoded, and the EV '
+                      'scale does not move — the scene median above reads the '
+                      'same either way.'
+                  : 'Off — a channel that reached saturation stays there, '
+                      'which is what a plain decode does.',
+              style: Chrome.label.copyWith(fontSize: 10, height: 1.35),
             ),
           ),
         ],

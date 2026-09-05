@@ -256,6 +256,9 @@ void main() {
       'Shadow',
       'Highlight',
       'White level',
+      // Not a slider: the two toggles in the Exposure section, in panel order.
+      'Highlight rolloff',
+      'Highlight recovery',
       'Brightness',
       'Contrast',
       'Saturation',

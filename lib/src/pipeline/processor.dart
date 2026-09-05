@@ -19,8 +19,10 @@ import '../ria/ria.dart';
 import 'colour_temp.dart';
 import 'export.dart';
 import 'geometry_ops.dart';
+import 'icc.dart';
 import 'render.dart';
 import 'tone.dart';
+import 'working_space.dart';
 
 /// How large the editing preview is allowed to get.
 ///
@@ -97,6 +99,15 @@ class RenderResult {
   /// Wall time for the pass, shown in the status bar.
   final int millis;
 
+  /// The median of the buffer this render was made from, in EV below sensor
+  /// saturation and in anchor units.
+  ///
+  /// Reported per render rather than once at open time, because highlight
+  /// recovery re-decodes: a readout fixed at open would keep showing the old
+  /// frame's median, and the whole claim of the feature is that this number
+  /// does not move when the toggle flips.
+  final double medianEv;
+
   const RenderResult({
     required this.rgba,
     required this.width,
@@ -104,6 +115,7 @@ class RenderResult {
     required this.histogram,
     required this.softLimitFactor,
     required this.millis,
+    required this.medianEv,
   });
 }
 
@@ -252,6 +264,17 @@ class _Worker {
   /// widened again without going back to the file.
   SceneImage? _scene;
 
+  /// The file `_scene` came from, so the toggle below can go back to it.
+  String? _path;
+
+  /// Which highlight mode `_scene` was decoded with. Highlight recovery is the
+  /// one control that cannot be applied to an already-decoded buffer — the
+  /// detail it restores was thrown away inside `dcraw_process` — so flipping
+  /// it re-decodes, and this is what notices. A toggle that did not invalidate
+  /// `_scene` would silently do nothing, which is indistinguishable from the
+  /// feature working, since the promise is that nothing visibly moves.
+  bool _sceneRecovery = false;
+
   /// The frame with the current geometry applied, and the grey point measured
   /// from it. Cached because resampling a 1.7 MP buffer is tens of
   /// milliseconds and the geometry only changes when a crop handle moves —
@@ -288,10 +311,20 @@ class _Worker {
     final f = RawFile.open(path);
     try {
       final meta = f.metadata();
-      final wb = WhiteBalance.from(f.colorData());
-      final scene = f.decodeSceneLinear(maxEdge: previewMaxEdge);
+      final cd = f.colorData();
+      // Wide. LibRaw clips to the output gamut inside `dcraw_process`, so an
+      // sRGB decode has already thrown the saturated colour away by the time
+      // this returns; the clip belongs at the display boundary instead.
+      final scene = f.decodeSceneLinear(
+          maxEdge: previewMaxEdge, outputColor: workingSpace);
+      // The white-balance matrix follows the space the buffer is actually in —
+      // read off the image rather than assumed, so one label drives the
+      // histogram row, the matrix and the profile alike.
+      final wb = WhiteBalance.from(cd, space: scene.colorspace);
 
       _scene = scene;
+      _path = path;
+      _sceneRecovery = false;
       _wb = wb;
       final working = _ensureWorking(Geometry.identity);
 
@@ -324,8 +357,13 @@ class _Worker {
     if (_working != null && _workingGeometry == geometry) return _working!;
 
     final working = applyGeometry(scene, geometry);
-    final zones =
-        ZoneHistogram.compute(working.data, working.width, working.height);
+    final zones = ZoneHistogram.compute(
+      working.data,
+      working.width,
+      working.height,
+      lumaRow: lumaRowFor(working.colorspace),
+      saturationScale: working.saturationScale,
+    );
     _working = working;
     _workingGeometry = geometry;
     _autoGrey = zones.autoGreyPoint();
@@ -340,6 +378,8 @@ class _Worker {
     }
     final sw = Stopwatch()..start();
 
+    _ensureHighlightMode(edit.highlightRecovery);
+
     final geometry =
         suppressCrop ? edit.geometry.withoutCrop : edit.geometry;
     final scene = _ensureWorking(geometry);
@@ -348,7 +388,13 @@ class _Worker {
     final gainLut = tone.buildGainLut();
     final disp = tone.buildDisplayLut(
         outMax: 255, entries: DisplayLut.previewEntries);
-    final matrix = _matrixFor(edit, wb);
+    final matrix = _matrixFor(
+      edit,
+      wb,
+      inputSpace: scene.colorspace,
+      outputSpace: previewSpace,
+      saturationScale: scene.saturationScale,
+    );
 
     var buf = _buffer;
     if (buf == null || buf.width != scene.width || buf.height != scene.height) {
@@ -359,7 +405,7 @@ class _Worker {
 
     renderRgb8(scene.data, scene.width, scene.height, matrix, gainLut, disp,
         buf.pixels, saturation: edit.saturation,
-        vibrance: edit.vibrance);
+        vibrance: edit.vibrance, lumaRow: lumaRowFor(previewSpace));
 
     if (edit.sharpness > 0) {
       buf.unsharpMask(_previewSigma, edit.sharpness, _sharpenThreshold);
@@ -375,13 +421,42 @@ class _Worker {
       histogram: hist,
       softLimitFactor: tone.softLimitFactor(),
       millis: sw.elapsedMilliseconds,
+      medianEv: _medianEv,
     );
+  }
+
+  /// Re-decode when the highlight toggle has moved.
+  ///
+  /// ~1.5 s at PPG on a 33 MP CR3, and unavoidable: reconstruction happens
+  /// inside LibRaw's `dcraw_process`, so there is nothing in the decoded
+  /// buffer to reconstruct from. Both caches are dropped, because the grey
+  /// point and the median have to be re-measured from the new pixels.
+  void _ensureHighlightMode(bool wanted) {
+    if (wanted == _sceneRecovery) return;
+    final path = _path;
+    if (path == null) return;
+
+    final f = RawFile.open(path);
+    try {
+      _scene = f.decodeSceneLinear(
+        maxEdge: previewMaxEdge,
+        outputColor: workingSpace,
+        highlightMode: wanted ? highlightRecoveryMode : 0,
+      );
+    } finally {
+      f.close();
+    }
+    _sceneRecovery = wanted;
+    _working = null;
+    _workingGeometry = null;
   }
 
   void _release() {
     _buffer?.dispose();
     _buffer = null;
     _scene = null;
+    _path = null;
+    _sceneRecovery = false;
     _working = null;
     _workingGeometry = null;
     _wb = null;
@@ -405,13 +480,25 @@ Tone _toneFor(Edit edit, double autoGrey) => Tone(
       whiteEv: edit.whiteEv,
     );
 
-Float64List? _matrixFor(Edit edit, WhiteBalance wb) {
+/// The one matrix the render loop applies, shared by preview and export.
+///
+/// Not forked between the two: it is what keeps them agreeing about colour,
+/// and the only thing that differs is which space they deliver into.
+Float64List? _matrixFor(
+  Edit edit,
+  WhiteBalance wb, {
+  required int inputSpace,
+  required int outputSpace,
+  required double saturationScale,
+}) {
   final k = edit.temperatureK;
-  if (k == null || wb.isNeutral(k)) return null;
-  final m = wb.matrixFor(k);
-  return Float64List.fromList(
-      [m[0][0], m[0][1], m[0][2], m[1][0], m[1][1], m[1][2], m[2][0], m[2][1],
-        m[2][2]]);
+  final wbMatrix = (k == null || wb.isNeutral(k)) ? null : wb.matrixFor(k);
+  return composedMatrix(
+    inputSpace: inputSpace,
+    outputSpace: outputSpace,
+    wbMatrix: wbMatrix,
+    saturationScale: saturationScale,
+  );
 }
 
 // ── Export ────────────────────────────────────────────────────────────────
@@ -467,8 +554,15 @@ Future<String> runExport(ExportRequest req) async {
   final SceneImage decoded;
   final WhiteBalance wb;
   try {
-    wb = WhiteBalance.from(f.colorData());
-    decoded = f.decodeSceneLinear(demosaic: exportDemosaic);
+    final cd = f.colorData();
+    // The same wide decode and the same highlight mode the preview used, so
+    // the exported highlights are the ones that were approved on screen.
+    decoded = f.decodeSceneLinear(
+      demosaic: exportDemosaic,
+      outputColor: workingSpace,
+      highlightMode: req.edit.highlightRecovery ? highlightRecoveryMode : 0,
+    );
+    wb = WhiteBalance.from(cd, space: decoded.colorspace);
   } finally {
     f.close();
   }
@@ -482,9 +576,14 @@ Future<String> runExport(ExportRequest req) async {
   // carried over. It is a percentile, and a percentile of a downsampled image
   // is not quite a percentile of the original — resampling averages away the
   // extremes that set it.
-  final zones = ZoneHistogram.compute(scene.data, scene.width, scene.height);
+  final zones = ZoneHistogram.compute(
+    scene.data,
+    scene.width,
+    scene.height,
+    lumaRow: lumaRowFor(scene.colorspace),
+    saturationScale: scene.saturationScale,
+  );
   final tone = _toneFor(req.edit, zones.autoGreyPoint());
-  final matrix = _matrixFor(req.edit, wb);
   final gainLut = tone.buildGainLut();
 
   // The sharpening radius has to grow with the image or an export looks
@@ -495,6 +594,21 @@ Future<String> runExport(ExportRequest req) async {
       : 1.0;
   final sigma = _previewSigma * (scale < 1 ? 1 : scale);
 
+  // The 16-bit TIFF is delivered in the working space and tagged with it; the
+  // 8-bit JPEG is converted to sRGB and tagged sRGB, because 8 bits across
+  // ProPhoto's gamut posterises visibly in a smooth gradient.
+  final outputSpace = req.format == ExportFormat.tiff
+      ? exportTiffSpace
+      : exportJpegSpace;
+  final matrix = _matrixFor(
+    req.edit,
+    wb,
+    inputSpace: scene.colorspace,
+    outputSpace: outputSpace,
+    saturationScale: scene.saturationScale,
+  );
+  final lumaRow = lumaRowFor(outputSpace);
+
   final Uint8List bytes;
   if (req.format == ExportFormat.tiff) {
     final disp = tone.buildDisplayLut(
@@ -502,7 +616,7 @@ Future<String> runExport(ExportRequest req) async {
     final out = Uint16List(scene.width * scene.height * 3);
     renderRgb16(scene.data, scene.width, scene.height, matrix, gainLut, disp,
         out, saturation: req.edit.saturation,
-        vibrance: req.edit.vibrance);
+        vibrance: req.edit.vibrance, lumaRow: lumaRow);
     // Sharpening runs through the C path, which needs the pixels in native
     // memory; 16-bit RGB has no RGBA wrapper here, so a TIFF is sharpened by
     // wrapping the same buffer as RGB16.
@@ -510,7 +624,8 @@ Future<String> runExport(ExportRequest req) async {
       sharpenRgb16(out, scene.width, scene.height, sigma, req.edit.sharpness,
           _sharpenThreshold);
     }
-    bytes = encodeTiff16(out, scene.width, scene.height);
+    bytes = encodeTiff16(out, scene.width, scene.height,
+        iccProfile: iccProfileFor(exportTiffSpace));
   } else {
     final disp = tone.buildDisplayLut(
         outMax: 255, entries: DisplayLut.previewEntries);
@@ -518,12 +633,12 @@ Future<String> runExport(ExportRequest req) async {
     try {
       renderRgb8(scene.data, scene.width, scene.height, matrix, gainLut, disp,
           buf.pixels, saturation: req.edit.saturation,
-        vibrance: req.edit.vibrance);
+        vibrance: req.edit.vibrance, lumaRow: lumaRow);
       if (req.edit.sharpness > 0) {
         buf.unsharpMask(sigma, req.edit.sharpness, _sharpenThreshold);
       }
       bytes = encodeJpeg(buf.pixels, scene.width, scene.height,
-          req.jpegQuality);
+          req.jpegQuality, iccProfile: iccProfileFor(exportJpegSpace));
     } finally {
       buf.dispose();
     }

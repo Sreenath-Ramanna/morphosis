@@ -16,7 +16,14 @@ import 'package:ffi/ffi.dart';
 import 'bindings.dart';
 
 export 'bindings.dart'
-    show RiaDemosaic, RiaFlip, RiaFormat, RiaStatus, RiaTransfer, riaPreviewJpeg;
+    show
+        RiaColorspace,
+        RiaDemosaic,
+        RiaFlip,
+        RiaFormat,
+        RiaStatus,
+        RiaTransfer,
+        riaPreviewJpeg;
 
 /// Thrown when a library call fails. Carries the `ria_status` so a caller can
 /// distinguish "not a RAW file" from "out of memory".
@@ -51,6 +58,23 @@ class Ria {
 
   static RiaLib lib([String? soPath]) =>
       _lib ??= RiaLib.open(soPath ?? resolveLibraryPath());
+
+  /// The 3x3 converting linear sRGB to `space`, row-major, as the decode
+  /// applied it — `ria_colorspace_from_srgb`.
+  ///
+  /// The table lives in C because C is what builds against LibRaw, and a
+  /// second hand-mirrored copy of a LibRaw internal in Dart is the thing this
+  /// call exists to avoid. Callers should go through
+  /// `pipeline/working_space.dart`, which caches it per isolate.
+  static List<double> colorspaceFromSrgb(int space) {
+    final m = calloc<Float>(9);
+    try {
+      _check('ria_colorspace_from_srgb', lib().colorspaceFromSrgb(space, m));
+      return [for (var i = 0; i < 9; i++) m[i]];
+    } finally {
+      calloc.free(m);
+    }
+  }
 
   /// True for extensions LibRaw is likely to handle. Used to filter a folder
   /// listing without opening every file in it.
@@ -164,7 +188,26 @@ class SceneImage {
   final int width;
   final int height;
 
-  const SceneImage(this.data, this.width, this.height);
+  /// `ria_image.saturation_level`: the sample value that is sensor
+  /// saturation, in these units. 1.0 unless highlight reconstruction rescaled
+  /// the frame, and below 1.0 when it did.
+  ///
+  /// Every EV computation divides by it. The pixels are left alone — a 16-bit
+  /// buffer multiplied back to the anchor re-clips exactly the highlights the
+  /// reconstruction recovered.
+  final double saturationScale;
+
+  /// `ria_image.colorspace`: the primaries `data` is expressed in, as a
+  /// `RiaColorspace` value.
+  final int colorspace;
+
+  const SceneImage(
+    this.data,
+    this.width,
+    this.height, {
+    this.saturationScale = 1.0,
+    this.colorspace = RiaColorspace.srgb,
+  });
 
   int get pixels => width * height;
 }
@@ -292,10 +335,21 @@ class RawFile {
 
   /// Decode to scene-referred linear 16-bit RGB, orientation baked in.
   ///
-  /// This is `ria_decode_options_scene_linear` unchanged — gamma 1.0, 16-bit,
-  /// no auto-brightness, highlight clip — because that preset is what makes
-  /// 1.0 mean sensor saturation on every file, and therefore what makes the
-  /// EV controls mean the same thing on every file.
+  /// `ria_decode_options_scene_linear` with three fields overridden:
+  /// `demosaic`, `highlightMode` and `outputColor`. Gamma 1.0, 16-bit and no
+  /// auto-brightness are the preset's, and they are what make 1.0 mean sensor
+  /// saturation — and therefore what make the EV controls mean the same thing
+  /// on every file.
+  ///
+  /// `highlightMode` above 0 asks LibRaw to reconstruct clipped highlights.
+  /// LibRaw then rescales the whole frame, and the applied scale comes back on
+  /// [SceneImage.saturationScale]: divide by it before taking log2 and the EV
+  /// scale is anchored to saturation whatever the mode was. At mode 0 it is
+  /// exactly 1.0, so the existing path does not move.
+  ///
+  /// `outputColor` chooses the primaries. Anything wider than sRGB stops the
+  /// gamut clip that otherwise happens inside `dcraw_process`, which is where
+  /// a saturated red loses its gradation.
   ///
   /// `maxEdge` shrinks the result with `ria_fit_within` after the decode,
   /// which is how the editing preview stays interactive. Resampling here is
@@ -311,6 +365,8 @@ class RawFile {
     int? maxEdge,
     bool halfSize = false,
     int demosaic = RiaDemosaic.ppg,
+    int highlightMode = 0,
+    int outputColor = RiaColorspace.srgb,
   }) {
     final lib = Ria.lib();
     final opt = calloc<RiaDecodeOptions>();
@@ -318,6 +374,8 @@ class RawFile {
     try {
       lib.decodeOptionsSceneLinear(opt);
       opt.ref.demosaic = demosaic;
+      opt.ref.highlightMode = highlightMode;
+      opt.ref.outputColor = outputColor;
       opt.ref.halfSize = halfSize ? 1 : 0;
       opt.ref.applyOrientation = 1;
       opt.ref.userFlip = -1;
@@ -349,7 +407,16 @@ class RawFile {
         final n = img.ref.width * img.ref.height * 3;
         final data = Uint16List(n);
         data.setAll(0, img.ref.data.cast<Uint16>().asTypedList(n));
-        return SceneImage(data, img.ref.width, img.ref.height);
+        // Read after the resize, not before: `ria_image_copy_encoding` carries
+        // both labels across `ria_fit_within`, and a resized buffer that
+        // forgot its anchor makes every EV downstream wrong.
+        return SceneImage(
+          data,
+          img.ref.width,
+          img.ref.height,
+          saturationScale: img.ref.saturationLevel,
+          colorspace: img.ref.colorspace,
+        );
       } finally {
         lib.imageFree(img);
       }

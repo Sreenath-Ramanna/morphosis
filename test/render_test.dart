@@ -7,9 +7,15 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:morphosis/src/model/edit.dart' show saturationRange, vibranceRange;
+import 'package:image/image.dart' as img;
 import 'package:morphosis/src/pipeline/export.dart';
+import 'package:morphosis/src/pipeline/icc.dart';
 import 'package:morphosis/src/pipeline/render.dart';
 import 'package:morphosis/src/pipeline/tone.dart';
+import 'package:morphosis/src/pipeline/working_space.dart';
+import 'package:morphosis/src/ria/ria.dart';
+
+import 'pipeline/working_space_test.dart' show libRawTable;
 
 /// A grey ramp in scene-linear 16-bit RGB, spanning fourteen stops.
 Uint16List rampFrame(int n) {
@@ -245,7 +251,7 @@ void main() {
         }
         // Back to linear before comparing: the ratios are only meaningful
         // there, which is the whole point of the two-domain split.
-        final lin = [for (final v in out) _srgbDecode(v / 65535)];
+        final lin = [for (final v in out) srgbDecode(v / 65535)];
         final sum = lin[0] + lin[1] + lin[2];
         ratios.add([lin[0] / sum, lin[1] / sum]);
       }
@@ -495,7 +501,8 @@ void main() {
   group('zone histogram', () {
     test('finds the percentile of a known ramp', () {
       const n = 4096;
-      final zh = ZoneHistogram.compute(rampFrame(n), n, 1);
+      final zh = ZoneHistogram.compute(rampFrame(n), n, 1,
+          lumaRow: rec709Luma, saturationScale: 1.0);
       expect(zh.pixels, n);
       // The ramp is uniform in EV over [−14, 0], so the median sits at −7.
       expect(zh.medianEv, closeTo(-7.0, 0.4));
@@ -504,7 +511,8 @@ void main() {
     test('the auto grey point places the top of the frame at display white',
         () {
       const n = 4096;
-      final zh = ZoneHistogram.compute(rampFrame(n), n, 1);
+      final zh = ZoneHistogram.compute(rampFrame(n), n, 1,
+          lumaRow: rec709Luma, saturationScale: 1.0);
       final grey = zh.autoGreyPoint();
       final displayWhite = grey / 0.18;
       // p99.5 of a −14…0 EV ramp is about −0.07 EV, i.e. just under 1.0.
@@ -512,7 +520,8 @@ void main() {
     });
 
     test('an all-black frame does not produce a degenerate grey point', () {
-      final zh = ZoneHistogram.compute(Uint16List(300), 100, 1);
+      final zh = ZoneHistogram.compute(Uint16List(300), 100, 1,
+          lumaRow: rec709Luma, saturationScale: 1.0);
       final grey = zh.autoGreyPoint();
       expect(grey, greaterThan(0));
       expect(grey.isFinite, isTrue);
@@ -594,6 +603,309 @@ void main() {
 
     test('the default quality is 95', () {
       expect(defaultJpegQuality, 95);
+    });
+  });
+
+  // ── The working space, the anchor, and the profiles ────────────────────
+
+  group('the composed matrix', () {
+    setUp(() {
+      colorspaceMatrixSource = (space) => libRawTable[space]!;
+      resetWorkingSpaceCache();
+    });
+    tearDown(() {
+      colorspaceMatrixSource = Ria.colorspaceFromSrgb;
+      resetWorkingSpaceCache();
+    });
+
+    Uint8List render8(Uint16List src, int n, Float64List? m,
+        List<double> lumaRow) {
+      final tone = Tone(greyPoint: 0.05);
+      final dst = Uint8List(n * 3);
+      renderRgb8(
+          src,
+          n,
+          1,
+          m,
+          tone.buildGainLut(),
+          tone.buildDisplayLut(
+              outMax: 255, entries: DisplayLut.previewEntries),
+          dst,
+          lumaRow: lumaRow);
+      return dst;
+    }
+
+    Uint16List render16(Uint16List src, int n, Float64List? m,
+        List<double> lumaRow) {
+      final tone = Tone(greyPoint: 0.05);
+      final dst = Uint16List(n * 3);
+      renderRgb16(
+          src,
+          n,
+          1,
+          m,
+          tone.buildGainLut(),
+          tone.buildDisplayLut(
+              outMax: 65535, entries: DisplayLut.exportEntries),
+          dst,
+          lumaRow: lumaRow);
+      return dst;
+    }
+
+    test('R6 a null matrix and an identity matrix render identically', () {
+      const n = 512;
+      final src = rampFrame(n);
+      final identity = Float64List.fromList([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+      expect(render8(src, n, null, rec709Luma),
+          render8(src, n, identity, rec709Luma),
+          reason: 'the hasMatrix fast path must agree with the loop it skips');
+      expect(render16(src, n, null, rec709Luma),
+          render16(src, n, identity, rec709Luma));
+    });
+
+    test('R7 the two output spaces agree about the pixel', () {
+      // One working-space buffer, rendered twice: once converted to sRGB with
+      // the Rec.709 row, once left in ProPhoto with the working-space row.
+      // Undo the display encoding on both and the second, converted down to
+      // sRGB, must be the first — which is the property that makes a TIFF and
+      // the preview that approved it the same photograph.
+      const space = RiaColorspace.prophoto;
+      final toSrgb = srgbFromWorking(space);
+      final m = composedMatrix(
+        inputSpace: space,
+        outputSpace: RiaColorspace.srgb,
+        wbMatrix: null,
+        saturationScale: 1.0,
+      );
+      final src = _colourFrame();
+      final n = _patches.length;
+
+      final a = render8(src, n, m, rec709Luma);
+      final b = render16(src, n, null, lumaRowFor(space));
+
+      for (var i = 0; i < n; i++) {
+        final linA = [
+          for (var c = 0; c < 3; c++) srgbDecode(a[i * 3 + c] / 255.0),
+        ];
+        final linB = [
+          for (var c = 0; c < 3; c++) srgbDecode(b[i * 3 + c] / 65535.0),
+        ];
+        // Only in-gamut pixels: a channel resting on 0 or 1 has been clamped
+        // and carries no information about what it was.
+        final clamped = linA.any((v) => v <= 0.0 || v >= 1.0) ||
+            linB.any((v) => v <= 0.0 || v >= 1.0);
+        if (clamped) continue;
+
+        final converted = apply3(toSrgb, linB);
+        for (var c = 0; c < 3; c++) {
+          expect(converted[c], closeTo(linA[c], 4 / 255.0),
+              reason: 'patch $i, channel $c');
+        }
+      }
+    });
+
+    test('R9 the zone histogram uses the row it is given', () {
+      // A saturated blue: Rec.709 weights blue at 0.0722, the ProPhoto row at
+      // 0.0166, so the same pixel is more than a stop darker under the second.
+      final src = Uint16List.fromList([0, 0, 60000]);
+      final rec = ZoneHistogram.compute(src, 1, 1,
+          lumaRow: rec709Luma, saturationScale: 1.0);
+      final wide = ZoneHistogram.compute(src, 1, 1,
+          lumaRow: lumaRowFor(RiaColorspace.prophoto), saturationScale: 1.0);
+
+      double expectedEv(List<double> row) =>
+          math.log(row[2] * 60000 / 65535.0) / math.ln2;
+
+      expect(rec.medianEv, closeTo(expectedEv(rec709Luma), 0.3));
+      expect(wide.medianEv,
+          closeTo(expectedEv(lumaRowFor(RiaColorspace.prophoto)), 0.3));
+      expect(rec.medianEv - wide.medianEv, greaterThan(1.0),
+          reason: 'the two rows must genuinely disagree, or this proves '
+              'nothing');
+    });
+  });
+
+  group('the saturation anchor', () {
+    test('R8 it is an exposure shift the histogram undoes', () {
+      // The synthetic, CI-runnable form of the headline property: a frame
+      // rescaled by s and binned with saturationScale s reports the median it
+      // had before. P3 in pipeline_check.dart is the same thing on a real
+      // frame.
+      const n = 4096;
+      final base = rampFrame(n);
+      final unscaled = ZoneHistogram.compute(base, n, 1,
+          lumaRow: rec709Luma, saturationScale: 1.0);
+
+      for (final s in [0.5401, 0.5206, 0.25]) {
+        final scaled = Uint16List(base.length);
+        for (var i = 0; i < base.length; i++) {
+          scaled[i] = (base[i] * s).round();
+        }
+        final anchored = ZoneHistogram.compute(scaled, n, 1,
+            lumaRow: rec709Luma, saturationScale: s);
+        expect(anchored.medianEv, closeTo(unscaled.medianEv, 0.02),
+            reason: 'at a scale of $s');
+
+        // And without the division it moves by exactly the scale, which is
+        // the failure this exists to catch.
+        final unanchored = ZoneHistogram.compute(scaled, n, 1,
+            lumaRow: rec709Luma, saturationScale: 1.0);
+        expect(unanchored.medianEv,
+            closeTo(unscaled.medianEv + math.log(s) / math.ln2, 0.05));
+      }
+    });
+
+    test('R10 the tone tables reach past the recovered maximum', () {
+      // Requirements section 5 measured the maximum in anchor units at 1.24
+      // for highlight_mode 1, 1.50 for mode 2 and 1.92 for mode 3; the library
+      // implementation then measured 1.715 for mode 2 on the Canon frame. The
+      // recovered highlights have to reach the shoulder unclamped, which means
+      // both tables must span well past that.
+      expect(Tone.gainYMax, greaterThanOrEqualTo(2.0));
+      expect(DisplayLut.vMax, greaterThanOrEqualTo(2.0));
+    });
+  });
+
+  group('ICC tagging', () {
+    setUp(() {
+      colorspaceMatrixSource = (space) => libRawTable[space]!;
+      resetWorkingSpaceCache();
+    });
+    tearDown(() {
+      colorspaceMatrixSource = Ria.colorspaceFromSrgb;
+      resetWorkingSpaceCache();
+    });
+
+    test('R1 tag 34675 points at the profile and the pixels still follow it',
+        () {
+      const w = 7, h = 5;
+      final rgb = Uint16List(w * h * 3);
+      for (var i = 0; i < rgb.length; i++) {
+        rgb[i] = (i * 997) & 0xFFFF;
+      }
+      final profile = iccProfileFor(RiaColorspace.prophoto);
+      final bytes = encodeTiff16(rgb, w, h, iccProfile: profile);
+      final bd = ByteData.view(bytes.buffer);
+
+      final ifd = bd.getUint32(4, Endian.little);
+      final count = bd.getUint16(ifd, Endian.little);
+      expect(count, 13, reason: 'twelve entries plus the profile');
+
+      final tags = <int, List<int>>{};
+      for (var i = 0; i < count; i++) {
+        final off = ifd + 2 + i * 12;
+        tags[bd.getUint16(off, Endian.little)] = [
+          bd.getUint16(off + 2, Endian.little),
+          bd.getUint32(off + 4, Endian.little),
+          bd.getUint32(off + 8, Endian.little),
+        ];
+      }
+      final ordered = tags.keys.toList()..sort();
+      expect(tags.keys.toList(), ordered, reason: 'tags must ascend');
+
+      final icc = tags[34675]!;
+      expect(icc[0], 7, reason: 'UNDEFINED');
+      expect(icc[1], profile.length);
+      final pixelOffset = tags[273]![2];
+      expect(icc[2] + icc[1], lessThanOrEqualTo(pixelOffset),
+          reason: 'the profile block sits before the pixels');
+      expect(bytes.sublist(icc[2], icc[2] + icc[1]), profile);
+
+      // And the pixels still come back unchanged.
+      for (var i = 0; i < rgb.length; i++) {
+        expect(bd.getUint16(pixelOffset + i * 2, Endian.little), rgb[i]);
+      }
+      expect(bytes.length, pixelOffset + rgb.lengthInBytes);
+    });
+
+    test('R2 without a profile the file is exactly what it was', () {
+      const w = 7, h = 5;
+      final rgb = Uint16List(w * h * 3);
+      for (var i = 0; i < rgb.length; i++) {
+        rgb[i] = (i * 997) & 0xFFFF;
+      }
+      expect(encodeTiff16(rgb, w, h, iccProfile: null),
+          encodeTiff16(rgb, w, h));
+      final bd = ByteData.view(encodeTiff16(rgb, w, h).buffer);
+      expect(bd.getUint16(bd.getUint32(4, Endian.little), Endian.little), 12);
+    });
+
+    test('R3 the APP2 segment is conformant', () {
+      const w = 32, h = 32;
+      final rgb = Uint8List(w * h * 3);
+      for (var i = 0; i < w * h; i++) {
+        rgb[i * 3] = (i * 3) & 0xFF;
+        rgb[i * 3 + 1] = 128;
+        rgb[i * 3 + 2] = 200;
+      }
+      final profile = iccProfileFor(RiaColorspace.srgb);
+      final bytes =
+          encodeJpeg(rgb, w, h, defaultJpegQuality, iccProfile: profile);
+
+      expect(bytes[0], 0xFF);
+      expect(bytes[1], 0xD8, reason: 'SOI');
+
+      // Walk the segments: the APP2 must appear after SOI and after any APPn
+      // the encoder already wrote, and before SOS.
+      var at = 2, found = -1;
+      while (at + 3 < bytes.length && bytes[at] == 0xFF) {
+        final marker = bytes[at + 1];
+        if (marker == 0xDA) break; // SOS
+        final len = (bytes[at + 2] << 8) | bytes[at + 3];
+        if (marker == 0xE2) {
+          found = at;
+          break;
+        }
+        at += 2 + len;
+      }
+      expect(found, greaterThan(2), reason: 'an APP2 segment before SOS');
+
+      final len = (bytes[found + 2] << 8) | bytes[found + 3];
+      expect(len, 2 + 12 + 2 + profile.length,
+          reason: 'package:image 4.9.2 writes this two bytes short, which is '
+              'why the segment is spliced by hand');
+      expect(
+          String.fromCharCodes(bytes.sublist(found + 4, found + 15)),
+          'ICC_PROFILE');
+      expect(bytes[found + 15], 0, reason: 'the signature NUL');
+      expect(bytes[found + 16], 1, reason: 'chunk number, 1-based');
+      expect(bytes[found + 17], 1, reason: 'chunk count');
+      expect(bytes.sublist(found + 18, found + 18 + profile.length), profile);
+    });
+
+    test('R4 the spliced file still decodes', () {
+      const w = 32, h = 32;
+      final rgb = Uint8List(w * h * 3);
+      for (var i = 0; i < w * h; i++) {
+        rgb[i * 3] = 40;
+        rgb[i * 3 + 1] = 130;
+        rgb[i * 3 + 2] = 210;
+      }
+      final bytes = encodeJpeg(rgb, w, h, defaultJpegQuality,
+          iccProfile: iccProfileFor(RiaColorspace.srgb));
+      final decoded = img.decodeJpg(bytes);
+      expect(decoded, isNotNull);
+      expect(decoded!.width, w);
+      expect(decoded.height, h);
+      final px = decoded.getPixel(16, 16);
+      expect(px.r, closeTo(40, 8));
+      expect(px.g, closeTo(130, 8));
+      expect(px.b, closeTo(210, 8));
+    });
+
+    test('R5 an oversized profile is refused, not truncated', () {
+      const w = 8, h = 8;
+      final rgb = Uint8List(w * h * 3);
+      final bytes = encodeJpeg(rgb, w, h, defaultJpegQuality);
+      expect(() => spliceIccApp2(bytes, Uint8List(70000)),
+          throwsArgumentError);
+      expect(maxIccSegment, lessThan(65533 - 14 + 1));
+    });
+
+    test('a real profile is nowhere near the single-chunk limit', () {
+      for (final space in [RiaColorspace.srgb, RiaColorspace.prophoto]) {
+        expect(iccProfileFor(space).length, lessThan(8000));
+      }
     });
   });
 }
@@ -678,10 +990,4 @@ void _expectSameDirection(List<int> a, List<int> b, int i, String reason) {
   for (final c in cross) {
     expect(c, closeTo(0, 0.03), reason: '$reason: hue rotated');
   }
-}
-
-double _srgbDecode(double v) {
-  if (v <= 0) return 0;
-  if (v >= 1) return 1;
-  return v <= 0.04045 ? v / 12.92 : math.pow((v + 0.055) / 1.055, 2.4).toDouble();
 }

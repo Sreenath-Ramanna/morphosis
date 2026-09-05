@@ -333,7 +333,7 @@ class Tone {
       var y = v * scale;
       if (shoulder) y = _reinhard(y, w);
       y = y < 0 ? 0 : (y > 1 ? 1 : y);
-      final code = (_srgbEncode(y) * outMax + 0.5).toInt();
+      final code = (srgbEncode(y) * outMax + 0.5).toInt();
       if (wide) {
         words![i] = code;
       } else {
@@ -391,10 +391,24 @@ double _reinhard(double y, double w) {
 /// viewer that opens an exported file assumes sRGB, so encoding anything else
 /// leaves the preview and the export each slightly wrong in the same
 /// direction with nothing to say so. The two curves differ only in the toe.
-double _srgbEncode(double v) {
+double srgbEncode(double v) {
   if (v <= 0) return 0;
   if (v >= 1) return 1;
   return v <= 0.0031308 ? 12.92 * v : 1.055 * math.pow(v, 1 / 2.4) - 0.055;
+}
+
+/// Its exact inverse: display code value → scene-linear.
+///
+/// Public for one reason — the generated ICC profile's tone reproduction curve
+/// is sampled from it. A TRC maps device value to linear, which is this
+/// direction, and sampling the pipeline's own function means the profile
+/// cannot drift from the curve the pipeline actually applies.
+double srgbDecode(double v) {
+  if (v <= 0) return 0;
+  if (v >= 1) return 1;
+  return v <= 0.04045
+      ? v / 12.92
+      : math.pow((v + 0.055) / 1.055, 2.4).toDouble();
 }
 
 const double _ln2 = 0.6931471805599453;

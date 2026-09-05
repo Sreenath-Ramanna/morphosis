@@ -37,7 +37,15 @@ SceneImage applyGeometry(SceneImage src, Geometry geometry) {
   } else {
     _resampleBilinear(src, dst, outW, outH, map);
   }
-  return SceneImage(dst, outW, outH);
+  // Both labels travel with the pixels. A crop that forgot the anchor would
+  // give the cropped frame a different EV scale from the uncropped one.
+  return SceneImage(
+    dst,
+    outW,
+    outH,
+    saturationScale: src.saturationScale,
+    colorspace: src.colorspace,
+  );
 }
 
 /// Destination-to-source mapping, as a 2x3 affine.

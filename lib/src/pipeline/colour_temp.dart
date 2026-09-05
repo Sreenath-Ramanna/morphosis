@@ -23,6 +23,7 @@
 import 'dart:math' as math;
 
 import '../ria/ria.dart';
+import 'working_space.dart';
 
 /// A white point, as the app reports it.
 class ColourTemperature {
@@ -67,11 +68,17 @@ class WhiteBalance {
   /// XYZ(D65) → camera.
   final List<List<double>> camXyz;
 
-  /// camera → sRGB linear, built the way dcraw builds `rgb_cam`.
+  /// camera → working-space linear, built the way dcraw builds `rgb_cam` and
+  /// then composed with the output-space matrix exactly as `convert_to_rgb`
+  /// does: `out_cam = out_rgb · rgb_cam`.
   final List<List<double>> rgbCam;
 
-  /// sRGB linear → camera, the inverse of the above.
+  /// working-space linear → camera, the inverse of the above.
   final List<List<double>> camRgb;
+
+  /// Which primaries [rgbCam] delivers into. `RiaColorspace.srgb` reproduces
+  /// what this class did before there was a working space.
+  final int space;
 
   /// The camera's own table, `[kelvin, r, 1, b]` rows sorted by mired
   /// ascending (so, by Kelvin descending). Empty when the body wrote none.
@@ -87,14 +94,21 @@ class WhiteBalance {
     required this.camXyz,
     required this.rgbCam,
     required this.camRgb,
+    required this.space,
     required this.table,
     required this.camMul,
     required this.asShot,
   });
 
-  factory WhiteBalance.from(RawColorData cd) {
+  /// `space` is the working space the decode delivered. It changes `rgbCam`,
+  /// and therefore `matrixFor` — in a wide space the adaptation matrix is
+  /// `M · A_sRGB · M⁻¹`, a similarity transform of the sRGB one rather than
+  /// the same matrix. Nothing cancels; the slider genuinely goes wrong if the
+  /// matrix does not follow the space.
+  factory WhiteBalance.from(RawColorData cd,
+      {int space = RiaColorspace.srgb}) {
     final camXyz = cd.camXyz;
-    final rgbCam = _rgbCamFrom(camXyz);
+    final rgbCam = _rgbCamFrom(camXyz, space);
     final camRgb = _invert3(rgbCam);
 
     final table = [...cd.wbct]..sort((a, b) => a[0].compareTo(b[0]));
@@ -108,6 +122,7 @@ class WhiteBalance {
       camXyz: camXyz,
       rgbCam: rgbCam,
       camRgb: camRgb,
+      space: space,
       table: byMired,
       camMul: cd.camMul,
       asShot: asShot,
@@ -350,14 +365,17 @@ const List<List<double>> _xyzFromSrgb = [
 ];
 
 /// Reproduces dcraw's `cam_xyz_coeff`: compose XYZ→camera with sRGB→XYZ,
-/// normalise each row to sum to 1, invert.
+/// normalise each row to sum to 1, invert — then, for a non-sRGB working
+/// space, left-multiply by `out_rgb[space - 1]`, which is what dcraw's
+/// `convert_to_rgb` does.
 ///
 /// The row normalisation is not cosmetic — it is what makes a neutral camera
-/// signal come out neutral in sRGB, and it is the step LibRaw folds into
-/// `pre_mul`. Reconstructing the matrix the same way is what makes
-/// `matrixFor` an exact inverse of what the decode did rather than an
-/// approximation of it.
-List<List<double>> _rgbCamFrom(List<List<double>> camXyz) {
+/// signal come out neutral, and it is the step LibRaw folds into `pre_mul`.
+/// Reconstructing the matrix the same way is what makes `matrixFor` an exact
+/// inverse of what the decode did rather than an approximation of it. It
+/// happens *before* the working-space multiply, because `out_rgb` has rows
+/// summing to 1 already and normalising after it would undo that.
+List<List<double>> _rgbCamFrom(List<List<double>> camXyz, int space) {
   final camRgb = _mul3(camXyz, _xyzFromSrgb);
   for (var i = 0; i < 3; i++) {
     final sum = camRgb[i][0] + camRgb[i][1] + camRgb[i][2];
@@ -367,7 +385,10 @@ List<List<double>> _rgbCamFrom(List<List<double>> camXyz) {
       }
     }
   }
-  return _invert3(camRgb);
+  final rgbCam = _invert3(camRgb);
+  return space == RiaColorspace.srgb
+      ? rgbCam
+      : _mul3(workingFromSrgb(space), rgbCam); // out_cam = out_rgb · rgb_cam
 }
 
 // ── 3×3 helpers ───────────────────────────────────────────────────────────

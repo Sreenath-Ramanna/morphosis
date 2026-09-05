@@ -64,6 +64,16 @@ class Edit {
   /// clipping them. Off reproduces what a plain decode does.
   final bool highlightRolloff;
 
+  /// Ask LibRaw to reconstruct the highlights that clipped in camera space,
+  /// rather than clipping them at the decode.
+  ///
+  /// Changing it re-decodes the file, which is why it lives on the `Edit`
+  /// rather than beside the display controls. LibRaw rescales the whole frame
+  /// when it reconstructs; the library reports that scale and every EV
+  /// computation divides by it, so flipping this does not move the exposure —
+  /// it only puts detail back where there was a flat white patch.
+  final bool highlightRecovery;
+
   /// Rotation and crop. Applied to the scene-referred buffer before anything
   /// else, so the histogram and the automatic grey point describe the crop.
   final Geometry geometry;
@@ -80,6 +90,7 @@ class Edit {
     this.saturation = 0,
     this.vibrance = 0,
     this.highlightRolloff = false,
+    this.highlightRecovery = false,
     this.geometry = Geometry.identity,
   });
 
@@ -97,6 +108,7 @@ class Edit {
       saturation == 0 &&
       vibrance == 0 &&
       !highlightRolloff &&
+      !highlightRecovery &&
       geometry.isIdentity;
 
   Edit copyWith({
@@ -112,6 +124,7 @@ class Edit {
     double? saturation,
     double? vibrance,
     bool? highlightRolloff,
+    bool? highlightRecovery,
     Geometry? geometry,
   }) =>
       Edit(
@@ -127,6 +140,7 @@ class Edit {
         saturation: saturation ?? this.saturation,
         vibrance: vibrance ?? this.vibrance,
         highlightRolloff: highlightRolloff ?? this.highlightRolloff,
+        highlightRecovery: highlightRecovery ?? this.highlightRecovery,
         geometry: geometry ?? this.geometry,
       );
 
@@ -149,12 +163,13 @@ class Edit {
       other.saturation == saturation &&
       other.vibrance == vibrance &&
       other.highlightRolloff == highlightRolloff &&
+      other.highlightRecovery == highlightRecovery &&
       other.geometry == geometry;
 
   @override
   int get hashCode => Object.hash(temperatureK, blackEv, shadowEv, highlightEv,
       whiteEv, brightnessEv, contrastEv, sharpness, saturation, vibrance,
-      highlightRolloff, geometry);
+      highlightRolloff, highlightRecovery, geometry);
 
   /// True when only the tonal controls differ, so a re-render can reuse the
   /// cached geometry-applied buffer instead of resampling again.
@@ -197,6 +212,7 @@ class Edit {
         'saturation': saturation,
         'vibrance': vibrance,
         'highlightRolloff': highlightRolloff,
+        'highlightRecovery': highlightRecovery,
         'geometry': geometry.toJson(),
       };
 
@@ -236,6 +252,11 @@ class Edit {
       vibrance: d('vibrance', defaults.vibrance),
       highlightRolloff:
           json['highlightRolloff'] as bool? ?? defaults.highlightRolloff,
+      // No `jsonVersion` bump: "absent means default" already covers a field
+      // that is merely added, and every document written before this build
+      // reads back as recovery off — which is what it was rendered with.
+      highlightRecovery:
+          json['highlightRecovery'] as bool? ?? defaults.highlightRecovery,
       geometry: geometry is Map<String, Object?>
           ? Geometry.fromJson(geometry)
           : defaults.geometry,

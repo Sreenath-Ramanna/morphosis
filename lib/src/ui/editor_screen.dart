@@ -73,6 +73,10 @@ class _EditorScreenState extends State<EditorScreen> {
   int _lastRenderMillis = 0;
   double _softLimit = 1.0;
 
+  /// The median of the frame the last render was made from. Highlight recovery
+  /// re-decodes, so this follows the render rather than the open.
+  double _medianEv = 0.0;
+
   bool _exporting = false;
   String? _status;
 
@@ -475,6 +479,7 @@ class _EditorScreenState extends State<EditorScreen> {
           _histogram = result.histogram;
           _lastRenderMillis = result.millis;
           _softLimit = result.softLimitFactor;
+          _medianEv = result.medianEv;
         });
         old?.dispose();
 
@@ -589,6 +594,7 @@ class _EditorScreenState extends State<EditorScreen> {
         histogram: _histogram,
         edit: _edit,
         softLimitFactor: _softLimit,
+        medianEv: _medianEv,
         tab: _tab,
         loading: _loading,
         exporting: _exporting,

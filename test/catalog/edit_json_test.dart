@@ -22,6 +22,7 @@ const populated = Edit(
   saturation: 18.5,
   vibrance: -7.5,
   highlightRolloff: true,
+  highlightRecovery: true,
   geometry: Geometry(
     quarterTurns: 1,
     straightenDegrees: 4,
@@ -194,6 +195,33 @@ void main() {
     test('quarter turns are kept in range', () {
       final json = Geometry.identity.toJson()..['quarterTurns'] = 7;
       expect(Geometry.fromJson(json).quarterTurns, 3);
+    });
+  });
+
+  group('highlight recovery', () {
+    test('E1 it round-trips, and absent means false', () {
+      expect(Edit.fromJson(populated.toJson()).highlightRecovery, isTrue);
+      expect(populated.toJson()['highlightRecovery'], isTrue);
+      // A document written before this build has no such key. The
+      // "absent means default" rule at edit.dart covers it, which is why no
+      // jsonVersion bump is needed — and this is the assertion that says so.
+      expect(
+          Edit.fromJson(without(populated, 'highlightRecovery'))
+              .highlightRecovery,
+          isFalse);
+      expect(Edit.neutral.highlightRecovery, isFalse);
+    });
+
+    test('E2 it participates in identity', () {
+      const off = Edit();
+      const on = Edit(highlightRecovery: true);
+      // Added to copyWith but not to == would make the toggle silently fail to
+      // trigger a re-render, which is indistinguishable from it working.
+      expect(on, isNot(off));
+      expect(on.hashCode, isNot(off.hashCode));
+      expect(off.copyWith(highlightRecovery: true), on);
+      expect(on.isNeutral, isFalse);
+      expect(off.isNeutral, isTrue);
     });
   });
 

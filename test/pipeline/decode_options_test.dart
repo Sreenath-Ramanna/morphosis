@@ -10,6 +10,7 @@
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:morphosis/src/pipeline/processor.dart';
+import 'package:morphosis/src/pipeline/working_space.dart';
 import 'package:morphosis/src/ria/ria.dart';
 
 void main() {
@@ -41,6 +42,45 @@ void main() {
       // resampled to previewMaxEdge, well under a full frame's short edge, and
       // the differences between these algorithms are pixel-level.
       expect(previewMaxEdge, lessThan(2000));
+    });
+  });
+
+  group('working space and delivery policy', () {
+    const declared = <int>{
+      RiaColorspace.raw,
+      RiaColorspace.srgb,
+      RiaColorspace.adobe,
+      RiaColorspace.wide,
+      RiaColorspace.prophoto,
+      RiaColorspace.xyz,
+      RiaColorspace.aces,
+    };
+
+    test('E3 the working space is one the library declares', () {
+      expect(declared, contains(workingSpace),
+          reason: 'an unknown output_color is not rejected by LibRaw, it just '
+              'produces different pixels');
+    });
+
+    test('E4 the working space is not sRGB', () {
+      // The whole point of the change: LibRaw clips to the output gamut inside
+      // dcraw_process, so an sRGB decode has already thrown the saturated
+      // colour away. If this ever passes trivially the feature is reverted.
+      expect(workingSpace, isNot(RiaColorspace.srgb));
+      expect(workingSpace, isNot(RiaColorspace.raw));
+    });
+
+    test('E5 the delivery spaces are what was decided', () {
+      expect(exportTiffSpace, workingSpace);
+      expect(exportJpegSpace, RiaColorspace.srgb,
+          reason: '8 bits across a wide gamut posterises in a gradient');
+      expect(previewSpace, RiaColorspace.srgb);
+    });
+
+    test('E6 recovery selects LibRaw blend', () {
+      // 1 unclips, 2 blends, 3+ rebuilds. All three carry the same
+      // normalisation scale; 2 is the one approach.md section 0 measured.
+      expect(highlightRecoveryMode, 2);
     });
   });
 }

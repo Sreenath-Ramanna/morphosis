@@ -16,16 +16,21 @@ import 'dart:typed_data';
 
 import '../model/edit.dart';
 import 'tone.dart';
+import 'working_space.dart';
 
-/// Rec.709 luma coefficients, applied to *linear* RGB — which is the only
-/// place they mean luminance. Saturation is the one deliberate exception: it
-/// applies them to the encoded display values, because that is the domain the
-/// operation is defined in, and there they weight a grey axis rather than
-/// measure light.
-const double _lumaR = 0.2126;
-const double _lumaG = 0.7152;
-const double _lumaB = 0.0722;
-
+/// The luminance row is a parameter, not a constant.
+///
+/// Rec.709's weights measure luminance of *linear* RGB only when the RGB has
+/// sRGB primaries. The pipeline now works in a wide space and delivers into
+/// two different ones, so every pass is told which row to weight with;
+/// `lumaRowFor` builds it, and for sRGB it is Rec.709 exactly, so that path is
+/// byte-identical to what it was. [rec709Luma] is the default because "the
+/// output is sRGB" is what the code assumed before there was a choice.
+///
+/// Saturation is the one deliberate exception to "linear only": it applies the
+/// same row to the encoded display values, because that is the domain the
+/// operation is defined in, and there it weights a grey axis rather than
+/// measuring light.
 const double _inv16 = 1.0 / 65535.0;
 
 /// A luminance distribution of the scene-referred frame, binned in EV.
@@ -44,7 +49,25 @@ class ZoneHistogram {
 
   const ZoneHistogram(this.counts, this.pixels);
 
-  static ZoneHistogram compute(Uint16List src, int width, int height) {
+  /// `lumaRow` weights the source, which is in the working space — this is
+  /// the one place the working-space row is genuinely needed, because the
+  /// histogram reads the buffer with no matrix available to convert it first.
+  ///
+  /// `saturationScale` is `ria_image.saturation_level`: the sample value that
+  /// is sensor saturation. Dividing by it before `log2` is what anchors the EV
+  /// scale, so a frame decoded with highlight reconstruction reports the same
+  /// median as the same frame decoded without it. `percentile` and
+  /// `autoGreyPoint` then return anchor units, which is what the composed
+  /// matrix's folded `1 / s` expects.
+  static ZoneHistogram compute(
+    Uint16List src,
+    int width,
+    int height, {
+    required List<double> lumaRow,
+    required double saturationScale,
+  }) {
+    final lumaR = lumaRow[0], lumaG = lumaRow[1], lumaB = lumaRow[2];
+    final scale = _inv16 / saturationScale;
     final counts = Uint32List(bins);
     final n = width * height;
     // Every pixel is unnecessary for a percentile; a stride keeps the load
@@ -54,8 +77,8 @@ class ZoneHistogram {
     const span = evMax - evMin;
     for (var p = 0; p < n; p += step) {
       final i = p * 3;
-      final y = (src[i] * _lumaR + src[i + 1] * _lumaG + src[i + 2] * _lumaB) *
-          _inv16;
+      final y =
+          (src[i] * lumaR + src[i + 1] * lumaG + src[i + 2] * lumaB) * scale;
       if (!(y > 0)) {
         counts[0]++;
         counted++;
@@ -169,9 +192,12 @@ double _gamutLimit(
 /// widens the result at the end, which is one cheap pass and replaces the
 /// copy out of native memory that had to happen anyway.
 ///
-/// `matrix` is the 3×3 white-balance correction in row-major order, or null
-/// when the temperature is unchanged — nine multiplies per pixel is worth
-/// skipping on the common path.
+/// `matrix` is the composed 3×3 in row-major order — gamut conversion, white
+/// balance and the saturation anchor collapsed into one — or null when all
+/// three are the identity, because nine multiplies per pixel is worth skipping
+/// when there is nothing to do. With a wide working space it never is, but the
+/// branch stays: it is what makes an sRGB working space cost exactly what it
+/// cost before.
 void renderRgb8(
   Uint16List src,
   int width,
@@ -182,6 +208,7 @@ void renderRgb8(
   Uint8List dst, {
   double saturation = 0,
   double vibrance = 0,
+  List<double> lumaRow = rec709Luma,
 }) {
   final table = disp.asBytes;
   final idxScale = disp.indexScale;
@@ -193,6 +220,8 @@ void renderRgb8(
   final m3 = matrix?[3] ?? 0, m4 = matrix?[4] ?? 1, m5 = matrix?[5] ?? 0;
   final m6 = matrix?[6] ?? 0, m7 = matrix?[7] ?? 0, m8 = matrix?[8] ?? 1;
   final hasMatrix = matrix != null;
+
+  final lumaR = lumaRow[0], lumaG = lumaRow[1], lumaB = lumaRow[2];
 
   // Hoisted for correctness, not for speed: `y + (c − y) × 1.0` is not
   // bit-exactly `c`, so at zero the arithmetic has to be skipped rather than
@@ -222,7 +251,7 @@ void renderRgb8(
       b = nb < 0 ? 0 : nb;
     }
 
-    final y = r * _lumaR + g * _lumaG + b * _lumaB;
+    final y = r * lumaR + g * lumaG + b * lumaB;
     final gain = gainLut[Tone.gainIndex(y)];
     r *= gain;
     g *= gain;
@@ -236,7 +265,7 @@ void renderRgb8(
       i = (math.sqrt(b) * idxScale).toInt();
       final bv = table[i > maxIdx ? maxIdx : i].toDouble();
 
-      final y = rv * _lumaR + gv * _lumaG + bv * _lumaB;
+      final y = rv * lumaR + gv * lumaG + bv * lumaB;
       final dr = rv - y, dg = gv - y, db = bv - y;
       // The widest excursion above the luma and the widest below. Both
       // controls want them — vibrance to see how colourful the pixel already
@@ -321,6 +350,7 @@ void renderRgb16(
   Uint16List dst, {
   double saturation = 0,
   double vibrance = 0,
+  List<double> lumaRow = rec709Luma,
 }) {
   final table = disp.asWords;
   final idxScale = disp.indexScale;
@@ -332,6 +362,8 @@ void renderRgb16(
   final m3 = matrix?[3] ?? 0, m4 = matrix?[4] ?? 1, m5 = matrix?[5] ?? 0;
   final m6 = matrix?[6] ?? 0, m7 = matrix?[7] ?? 0, m8 = matrix?[8] ?? 1;
   final hasMatrix = matrix != null;
+
+  final lumaR = lumaRow[0], lumaG = lumaRow[1], lumaB = lumaRow[2];
 
   final hasColour = saturation != 0 || vibrance != 0;
   final hasVibrance = vibrance != 0;
@@ -354,7 +386,7 @@ void renderRgb16(
       b = nb < 0 ? 0 : nb;
     }
 
-    final y = r * _lumaR + g * _lumaG + b * _lumaB;
+    final y = r * lumaR + g * lumaG + b * lumaB;
     final gain = gainLut[Tone.gainIndex(y)];
     r *= gain;
     g *= gain;
@@ -368,7 +400,7 @@ void renderRgb16(
       i = (math.sqrt(b) * idxScale).toInt();
       final bv = table[i > maxIdx ? maxIdx : i].toDouble();
 
-      final y = rv * _lumaR + gv * _lumaG + bv * _lumaB;
+      final y = rv * lumaR + gv * lumaG + bv * lumaB;
       final dr = rv - y, dg = gv - y, db = bv - y;
       // The widest excursion above the luma and the widest below. Both
       // controls want them — vibrance to see how colourful the pixel already
